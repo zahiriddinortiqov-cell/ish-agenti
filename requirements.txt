@@ -4,7 +4,7 @@ requests
 pydantic
 pyTelegramBotAPI
 python-dotenv
-duckduckgo-search
+ddgs
 schedule
 pytz
 tzdata
