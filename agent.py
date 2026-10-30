@@ -4,9 +4,9 @@
 O'zbekistondagi Energetika, Loyihalash va Muhandislik Vakansiyalari AI Agenti (Render.com 24/7 Ready)
 Manbalar:
   1. [hh.uz API] — to'g'ridan-to'g'ri rasmiy JSON API (brauzer headers bilan)
-  2. [LinkedIn Guest API] — DuckDuckGo (ddgs) O'RNIGA to'g'ridan-to'g'ri LinkedIn Public Guest API
-     (jobs-guest/jobs/api/seeMoreJobPostings/search) ishlatiladi — Render serverida bloklanmaydi
-     va hech qanday RuntimeWarning chiqarmaydi!
+  2. [LinkedIn Guest API] — to'g'ridan-to'g'ri LinkedIn Public Guest API (DuckDuckGo-siz)
+Yangilangan Gemini Model:
+  - gemini-3.0-flash / gemini-3.8-flash (avtomatik mos modelni tanlash mexanizmi bilan)
 """
 
 from __future__ import annotations
@@ -66,7 +66,6 @@ def get_tashkent_now() -> datetime:
     return datetime.now(TASHKENT_TZ)
 
 
-# Bloklanishni chetlab o'tish uchun haqiqiy Chrome brauzeri sarlavhalari (Headers)
 BROWSER_HEADERS: dict[str, str] = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -108,7 +107,18 @@ RESUME_FILES: dict[str, Path] = {
     "en": BASE_DIR / "rezyume_en.pdf",
 }
 
-GEMINI_MODEL = "gemini-2.5-flash"
+# GEMINI MODEL SOZLAMASI:
+# Terminal shriftida nuqtali nol ('3.0') '3.8' ga o'xshab ko'rinishi sababli
+# ikkala variant hamda avtomatik model aniqlash ro'yxati kiritildi:
+GEMINI_MODEL = "gemini-3.0-flash"
+GEMINI_MODEL_CANDIDATES: list[str] = [
+    "gemini-3.0-flash",
+    "gemini-3.8-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]
+ACTIVE_GEMINI_MODEL: str | None = None
 
 # Avtomatik qidiruv vaqtlari (O'zbekiston vaqti bilan kuniga 2 marta: 09:00 va 19:00)
 SCHEDULE_TIMES_UZT: list[str] = ["09:00", "19:00"]
@@ -165,7 +175,7 @@ TARGET_KEYWORDS: list[str] = [kw.lower() for kw in HH_SEARCH_KEYWORDS] + [
     "energy",
 ]
 
-# 2-MANBA: LinkedIn Public Guest API (DuckDuckGo o'rniga to'g'ridan-to'g'ri LinkedIn serveridan!)
+# 2-MANBA: LinkedIn Public Guest API
 LINKEDIN_GUEST_SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 LINKEDIN_GUEST_DETAIL_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 
@@ -201,7 +211,7 @@ AUTO_SCHEDULE_ENABLED = True
 
 def auto_setup() -> None:
     """Render.com, Koyeb va GitHub uchun zarur fayllarni UTF-8 formatda yaratadi."""
-    print("\n[0/4] Render.com / Koyeb va GitHub uchun loyiha fayllari tekshirilmoqda (auto_setup)...")
+    print("\n[0/4] Render.com / Koyeb va GitHub uchun loyiha fayllari tekshirilmoqda (auto_setup)...", flush=True)
 
     requirements_content = (
         "google-genai\n"
@@ -248,9 +258,9 @@ def auto_setup() -> None:
     for file_path, content in files_to_create.items():
         try:
             file_path.write_text(content, encoding="utf-8", newline="\n")
-            print(f"  [+] Tayyorlandi: {file_path}")
+            print(f"  [+] Tayyorlandi: {file_path}", flush=True)
         except Exception as exc:
-            print(f"  [!] {file_path.name} faylini yaratishda xatolik: {exc}")
+            print(f"  [!] {file_path.name} faylini yaratishda xatolik: {exc}", flush=True)
 
 
 # =====================================================================
@@ -265,6 +275,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         payload = {
             "status": "ok",
             "service": "UzEnergyJobAgent",
+            "model": ACTIVE_GEMINI_MODEL or GEMINI_MODEL,
             "tashkent_time": get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S UTC+5"),
             "auto_schedule_enabled": AUTO_SCHEDULE_ENABLED,
         }
@@ -285,10 +296,10 @@ def start_health_check_server() -> None:
     def _serve() -> None:
         try:
             server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-            print(f"  [+] Health Check veb-serveri 0.0.0.0:{port} portida ishga tushdi.")
+            print(f"  [+] Health Check veb-serveri 0.0.0.0:{port} portida ishga tushdi.", flush=True)
             server.serve_forever()
         except Exception as exc:
-            print(f"  [!] Health Check server xatoligi (port {port}): {exc}")
+            print(f"  [!] Health Check server xatoligi (port {port}): {exc}", flush=True)
 
     server_thread = threading.Thread(target=_serve, daemon=True)
     server_thread.start()
@@ -348,7 +359,7 @@ def load_seen_jobs() -> set[str]:
             lines = SEEN_JOBS_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
             return {line.strip() for line in lines if line.strip()}
         except Exception as exc:
-            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} faylini o'qishda xatolik: {exc}")
+            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} faylini o'qishda xatolik: {exc}", flush=True)
             return set()
 
 
@@ -357,7 +368,7 @@ def clear_seen_jobs() -> None:
         try:
             SEEN_JOBS_FILE.write_text("", encoding="utf-8")
         except Exception as exc:
-            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} faylini tozalashda xatolik: {exc}")
+            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} faylini tozalashda xatolik: {exc}", flush=True)
 
 
 def mark_job_as_seen(vac_id: str) -> None:
@@ -369,7 +380,7 @@ def mark_job_as_seen(vac_id: str) -> None:
             with SEEN_JOBS_FILE.open("a", encoding="utf-8") as f:
                 f.write(f"{vac_id}\n")
         except Exception as exc:
-            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} fayliga yozishda xatolik: {exc}")
+            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} fayliga yozishda xatolik: {exc}", flush=True)
 
 
 def find_matched_keywords(title: str, description: str, source_kw: str = "") -> list[str]:
@@ -404,7 +415,7 @@ def get_config() -> dict[str, str]:
         missing.append("TELEGRAM_CHAT_ID")
 
     if missing:
-        print("\n[XATOLIK] Quyidagi muhim kalitlar topilmadi:", ", ".join(missing))
+        print("\n[XATOLIK] Quyidagi muhim kalitlar topilmadi:", ", ".join(missing), flush=True)
         sys.exit(1)
 
     return {
@@ -430,23 +441,23 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
                 pages_text.append(page_text.strip())
         return "\n\n".join(pages_text).strip()
     except Exception as exc:
-        print(f"[OGOHLANTIRISH] {pdf_path.name} faylini o'qishda xatolik: {exc}")
+        print(f"[OGOHLANTIRISH] {pdf_path.name} faylini o'qishda xatolik: {exc}", flush=True)
         return ""
 
 
 def load_all_resumes() -> dict[str, str]:
     resumes: dict[str, str] = {}
-    print("\n[1/4] PDF rezyumelar tekshirilmoqda...")
+    print("\n[1/4] PDF rezyumelar tekshirilmoqda...", flush=True)
     for lang, path in RESUME_FILES.items():
         text = extract_text_from_pdf(path)
         if text:
             resumes[lang] = text
-            print(f"  [+] {path.name} ({lang.upper()}) muvaffaqiyatli o'qildi ({len(text)} belgi).")
+            print(f"  [+] {path.name} ({lang.upper()}) muvaffaqiyatli o'qildi ({len(text)} belgi).", flush=True)
         else:
-            print(f"  [-] {path.name} ({lang.upper()}) topilmadi yoki bo'sh: {path}")
+            print(f"  [-] {path.name} ({lang.upper()}) topilmadi yoki bo'sh: {path}", flush=True)
 
     if not resumes:
-        print("  [!] PDF rezyumelar topilmadi, standart Junior Energetik/Muhandis profili ishlatiladi.")
+        print("  [!] PDF rezyumelar topilmadi, standart Junior Energetik/Muhandis profili ishlatiladi.", flush=True)
         resumes = {
             "uz": "Energetika va elektrotexnika yo'nalishi bo'yicha oliy ma'lumotli muhandis. AutoCAD (elektr chizmalar, sxemalar) va MS Office dasturlarini mukammal biladi.",
             "ru": "Инженер-энергетик / проектировщик с высшим профильным образованием. Отличное владение AutoCAD (однолинейные схемы, чертежи ЭОМ, электроснабжение, ПТО) и MS Office.",
@@ -554,9 +565,6 @@ def fetch_new_hh_uz_vacancies(
     seen_jobs: set[str],
     max_items: int = MAX_HH_VACANCIES_PER_SCAN,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """
-    1-YO'NALISH: hh.uz API dan har bir kalit so'z bo'yicha alohida, sodda so'rov yuboradi.
-    """
     now_str = get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[{now_str} UZT] [hh.uz] {len(keywords)} ta kalit so'z bo'yicha qidirilmoqda...", flush=True)
 
@@ -688,15 +696,10 @@ def fetch_new_hh_uz_vacancies(
 
 
 def _parse_linkedin_guest_html(html_text: str, source_kw: str) -> list[dict[str, Any]]:
-    """
-    LinkedIn Guest Jobs API (jobs-guest/jobs/api/seeMoreJobPostings/search) qaytargan
-    HTML kartochkalardan vakansiya ID, sarlavha, kompaniya, manzil va havolani ajratib oladi.
-    """
     cards: list[dict[str, Any]] = []
     li_blocks = re.findall(r"<li[^>]*>(.*?)</li>", html_text, flags=re.DOTALL | re.IGNORECASE)
 
     for block in li_blocks:
-        # 1. Job ID
         urn_match = re.search(r"urn:li:jobPosting:(\d+)", block)
         href_match = re.search(r'href="([^"]*linkedin\.com/jobs/view/[^"]+)"', block, flags=re.IGNORECASE)
 
@@ -714,7 +717,6 @@ def _parse_linkedin_guest_html(html_text: str, source_kw: str) -> list[dict[str,
         raw_url = href_match.group(1).split("?")[0] if href_match else f"https://www.linkedin.com/jobs/view/{job_num}"
         vac_id = f"li_{job_num}" if job_num else f"li_{hashlib.md5(raw_url.encode()).hexdigest()[:10]}"
 
-        # 2. Lavozim nomi (base-search-card__title)
         title_match = re.search(
             r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>(.*?)</h3>',
             block,
@@ -722,7 +724,6 @@ def _parse_linkedin_guest_html(html_text: str, source_kw: str) -> list[dict[str,
         )
         title = clean_html(title_match.group(1)) if title_match else "Engineer (LinkedIn)"
 
-        # 3. Kompaniya nomi (base-search-card__subtitle)
         comp_match = re.search(
             r'<h4[^>]*class="[^"]*base-search-card__subtitle[^"]*"[^>]*>(.*?)</h4>',
             block,
@@ -730,7 +731,6 @@ def _parse_linkedin_guest_html(html_text: str, source_kw: str) -> list[dict[str,
         )
         company = clean_html(comp_match.group(1)) if comp_match else "LinkedIn Employer"
 
-        # 4. Joylashuv (job-search-card__location)
         loc_match = re.search(
             r'<span[^>]*class="[^"]*job-search-card__location[^"]*"[^>]*>(.*?)</span>',
             block,
@@ -756,11 +756,6 @@ def search_linkedin_jobs(
     seen_jobs: set[str],
     max_results: int = MAX_LINKEDIN_JOBS_PER_SCAN,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """
-    2-YO'NALISH: DuckDuckGo (ddgs) O'RNIGA to'g'ridan-to'g'ri LinkedIn Public Guest API
-    (https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search) va
-    haqiqiy brauzer headers yordamida O'zbekistondagi LinkedIn vakansiyalarini oladi.
-    """
     if STOP_SCAN_EVENT.is_set():
         return [], {"unique_found": 0, "new_count": 0, "skipped_seen": 0, "errors": []}
 
@@ -810,7 +805,6 @@ def search_linkedin_jobs(
                 li_errors.append(str(exc)[:60])
         time.sleep(0.4)
 
-    # Har bir yangi LinkedIn vakansiyasining to'liq tavsifini olishga harakat qilamiz
     linkedin_vacancies: list[dict[str, Any]] = []
     for card in raw_new_cards[:max_results]:
         if STOP_SCAN_EVENT.is_set():
@@ -871,7 +865,7 @@ def search_linkedin_jobs(
 
 
 # =====================================================================
-# 9. GEMINI AI TAHLILI VA ZAXIRA (FALLBACK) MEXANIZMI
+# 9. GEMINI AI TAHLILI (AVTOMATIK MODEL TANLASH + ZAXIRA MEXANIZMI)
 # =====================================================================
 
 def build_fallback_evaluation(
@@ -926,6 +920,8 @@ def analyze_vacancy_with_gemini(
     vacancy: dict[str, Any],
     resumes: dict[str, str],
 ) -> tuple[VacancyEvaluation, str]:
+    global ACTIVE_GEMINI_MODEL
+
     combined_vac_text = f"{vacancy.get('title', '')}\n{vacancy.get('description', '')}"
     pre_detected_lang = detect_language_fast(combined_vac_text)
 
@@ -966,24 +962,44 @@ Rezyume matni:
 {resume_text[:8000]}
 """.strip()
 
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=VacancyEvaluation,
-                temperature=0.2,
-            ),
-        )
+    models_to_try = [ACTIVE_GEMINI_MODEL] if ACTIVE_GEMINI_MODEL else list(GEMINI_MODEL_CANDIDATES)
+    evaluation: VacancyEvaluation | None = None
+    last_error: Exception | None = None
 
-        if response.parsed and isinstance(response.parsed, VacancyEvaluation):
-            evaluation: VacancyEvaluation = response.parsed
-        else:
-            raw_json = json.loads(response.text or "{}")
-            evaluation = VacancyEvaluation(**raw_json)
-    except Exception as exc:
-        print(f"     [!] Gemini API xatoligi ({exc}) — zaxira tahlil ishlatildi.", flush=True)
+    for model_name in models_to_try:
+        if not model_name:
+            continue
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=VacancyEvaluation,
+                    temperature=0.2,
+                ),
+            )
+            if response.parsed and isinstance(response.parsed, VacancyEvaluation):
+                evaluation = response.parsed
+            else:
+                raw_json = json.loads(response.text or "{}")
+                evaluation = VacancyEvaluation(**raw_json)
+
+            if ACTIVE_GEMINI_MODEL != model_name:
+                ACTIVE_GEMINI_MODEL = model_name
+                print(f"     [+] Faol Gemini modeli tasdiqlandi: {ACTIVE_GEMINI_MODEL}", flush=True)
+            break
+        except Exception as exc:
+            last_error = exc
+            err_str = str(exc)
+            # Agar model nomi 404 NOT_FOUND bersa, ro'yxatdagi keyingi modelni sinab ko'ramiz
+            if "404" in err_str or "NOT_FOUND" in err_str:
+                ACTIVE_GEMINI_MODEL = None
+                continue
+            break
+
+    if evaluation is None:
+        print(f"     [!] Gemini API xatoligi ({last_error}) — zaxira tahlil ishlatildi.", flush=True)
         evaluation = build_fallback_evaluation(vacancy, selected_lang)
 
     api_contacts = str(vacancy.get("contacts") or "").strip()
@@ -1153,6 +1169,7 @@ def run_single_scan(
                     text=(
                         f"🔍 <b>Qidiruv boshlandi...</b> ({html.escape(trigger_label)})\n"
                         f"🕒 Toshkent vaqti: <code>{get_tashkent_now().strftime('%H:%M:%S')}</code>\n"
+                        f"🤖 Model: <code>{ACTIVE_GEMINI_MODEL or GEMINI_MODEL}</code>\n"
                         f"📂 Tarixda ko‘rilganlar (seen_jobs): <code>{len(seen_jobs)}</code> ta\n"
                         "⏳ Manbalar (<code>[hh.uz API]</code> va <code>[LinkedIn Guest API]</code>) tekshirilmoqda..."
                     ),
@@ -1164,14 +1181,12 @@ def run_single_scan(
 
         state = load_state()
 
-        # 1-yo'nalish: hh.uz API
         hh_vacancies, hh_diag = fetch_new_hh_uz_vacancies(
             HH_SEARCH_KEYWORDS,
             seen_jobs=seen_jobs,
             max_items=MAX_HH_VACANCIES_PER_SCAN,
         )
 
-        # 2-yo'nalish: LinkedIn Guest API (DuckDuckGo siz!)
         linkedin_vacancies, li_diag = search_linkedin_jobs(
             seen_jobs=seen_jobs,
             max_results=MAX_LINKEDIN_JOBS_PER_SCAN,
@@ -1401,7 +1416,8 @@ def register_bot_handlers(
             help_text = (
                 "🤖 <b>Energetika va Muhandislik Vakansiyalari AI Agenti</b>\n\n"
                 f"• <b>Toshkent vaqti:</b> <code>{get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
-                f"• <b>Manbalar:</b> <code>[hh.uz API]</code> + <code>[LinkedIn Guest API]</code> (DuckDuckGo-siz, bloklanmaydigan to‘g‘ridan-to‘g‘ri ulanish)\n"
+                f"• <b>Gemini Model:</b> <code>{ACTIVE_GEMINI_MODEL or GEMINI_MODEL}</code>\n"
+                f"• <b>Manbalar:</b> <code>[hh.uz API]</code> + <code>[LinkedIn Guest API]</code>\n"
                 f"• <b>Avtomatik jadval:</b> {sched_status}\n"
                 f"• <b>Tarix bazasi (seen_jobs.txt):</b> {seen_count} ta vakansiya ko‘rilgan.\n\n"
                 "👇 <b>Pastdagi tugmalar orqali boshqarishingiz mumkin:</b>\n"
@@ -1558,7 +1574,7 @@ def register_bot_handlers(
 
 def main() -> None:
     print("=" * 88, flush=True)
-    print(" O'ZBEKISTON ENERGETIKA VA MUHANDISLIK VAKANSIYALARI AI AGENTI (DUCKDUCKGO-SIZ VERSIYA)", flush=True)
+    print(" O'ZBEKISTON ENERGETIKA VA MUHANDISLIK VAKANSIYALARI AI AGENTI (GEMINI 3 FLASH)", flush=True)
     print(f" Ishchi papka   : {BASE_DIR}", flush=True)
     print(f" Tarix fayli    : {SEEN_JOBS_FILE}", flush=True)
     print(f" Toshkent vaqti : {get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S (UTC+5)')}", flush=True)
@@ -1585,10 +1601,10 @@ def main() -> None:
         bot.send_message(
             chat_id=config["TELEGRAM_CHAT_ID"],
             text=(
-                "✅ <b>AI Agent yangilandi (DuckDuckGo o‘rniga to‘g‘ridan-to‘g‘ri LinkedIn Guest API + Brauzer Headers)!</b>\n\n"
+                "✅ <b>AI Agent yangilandi (Gemini 3 Flash)!</b>\n\n"
                 f"• <b>Toshkent vaqti:</b> <code>{get_tashkent_now().strftime('%H:%M:%S (UTC+5)')}</code>\n"
+                f"• <b>Gemini Model:</b> <code>{GEMINI_MODEL}</code> / <code>gemini-3.8-flash</code>\n"
                 "• <b>Manbalar:</b> <code>[hh.uz API]</code> + <code>[LinkedIn Guest API]</code>\n"
-                f"• <b>Tarixda (seen_jobs.txt):</b> {len(seen_initial)} ta vakansiya\n"
                 "• Hoziroq tekshirish uchun <b>[ 🔍 Hozir qidirish ]</b> tugmasini bosing."
             ),
             parse_mode="HTML",
