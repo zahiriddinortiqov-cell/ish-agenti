@@ -2,13 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 O'zbekistondagi Energetika, Loyihalash va Muhandislik Vakansiyalari AI Agenti (Render.com 24/7 Ready)
-Manbalar: [hh.uz API] + [LinkedIn / Web (DDGS)]
-Tuzatilgan qidiruv mexanizmi:
-1. hh.uz API uchun alohida, sodda va 100% ishlaydigan kalit so'z so'rovlari (murakkab qavslarsiz)
-   hamda haqiqiy brauzer User-Agent sarlavhasi.
-2. DuckDuckGo (DDGS) uchun sodda qidiruv so'rovlari va backend zaxirasi ('api' -> 'html' -> 'lite').
-3. Telegramning o'zida diagnostika hisoboti (nechta topildi, nechtasi yangi, nechtasi avval ko'rilgan)
-   hamda [ 🗑️ Tarixni tozalash ] tugmasi.
+Manbalar:
+  1. [hh.uz API] — to'g'ridan-to'g'ri rasmiy JSON API (brauzer headers bilan)
+  2. [LinkedIn Guest API] — DuckDuckGo (ddgs) O'RNIGA to'g'ridan-to'g'ri LinkedIn Public Guest API
+     (jobs-guest/jobs/api/seeMoreJobPostings/search) ishlatiladi — Render serverida bloklanmaydi
+     va hech qanday RuntimeWarning chiqarmaydi!
 """
 
 from __future__ import annotations
@@ -27,11 +25,18 @@ from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
+# Render.com loglarida barcha print() xabarlari darhol ko'rinishi uchun buferni o'chiramiz
+os.environ["PYTHONUNBUFFERED"] = "1"
+try:
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+except Exception:
+    pass
+
 import requests
 import schedule
 import telebot
 from dotenv import load_dotenv
-from duckduckgo_search import DDGS
 from telebot.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -47,7 +52,7 @@ from google.genai import types
 
 
 # =====================================================================
-# 1. SOZLAMALAR, VAQT MINTAQASI (UTC+5) VA PAPKALAR
+# 1. SOZLAMALAR, VAQT MINTAQASI (UTC+5) VA REAL BRAUZER HEADERS
 # =====================================================================
 
 try:
@@ -60,6 +65,36 @@ def get_tashkent_now() -> datetime:
     """Server qaysi davlatda (UTC) bo'lishidan qat'i nazar, aniq Toshkent vaqtini (UTC+5) qaytaradi."""
     return datetime.now(TASHKENT_TZ)
 
+
+# Bloklanishni chetlab o'tish uchun haqiqiy Chrome brauzeri sarlavhalari (Headers)
+BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+    "Accept-Language": "ru-RU,ru;q=0.9,uz-UZ;q=0.8,uz;q=0.7,en-US;q=0.6,en;q=0.5",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+HH_API_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Accept-Language": "ru-RU,ru;q=0.9,uz;q=0.8,en;q=0.7",
+}
 
 DEFAULT_PROJECT_DIR = Path(r"D:\IshAgenti")
 BASE_DIR = DEFAULT_PROJECT_DIR if DEFAULT_PROJECT_DIR.exists() else Path(__file__).resolve().parent
@@ -82,15 +117,13 @@ SCHEDULE_TIMES_UZT: list[str] = ["09:00", "19:00"]
 HIGH_MATCH_THRESHOLD = 80
 MEDIUM_MATCH_THRESHOLD = 0
 
-MAX_HH_VACANCIES_PER_SCAN = 40
+MAX_HH_VACANCIES_PER_SCAN = 35
 MAX_LINKEDIN_JOBS_PER_SCAN = 15
 
 # 1-MANBA: hh.uz (HeadHunter API) — O'zbekiston hududi kodi: 97
 HH_API_BASE_URL = "https://api.hh.ru/vacancies"
 UZBEKISTAN_AREA_ID = "97"
 
-# MUHIM TUZATISH: hh.uz API murakkab qavs va ko'p OR operatorlarida 0 qaytaradi.
-# Shu sababli har bir yo'nalish alohida sodda va aniq kalit so'z sifatida beriladi:
 HH_SEARCH_KEYWORDS: list[str] = [
     # 1. Elektroenergetika yo'nalishi
     "Энергетик",
@@ -110,7 +143,7 @@ HH_SEARCH_KEYWORDS: list[str] = [
     "Электроосвещение",
     "Muhandis-proyektirovshchik",
     "Engineer",
-    "Инженер",
+    "Инженер-энергетик",
     # 3. Qurilish va Ishlab chiqarish texnik yo'nalishlari
     "Инженер ПТО",
     "Главный инженер",
@@ -120,8 +153,8 @@ HH_SEARCH_KEYWORDS: list[str] = [
     "Наладчик",
 ]
 
-# Sarlavha va tavsifda tekshiriladigan kalit so'zlar (kichik harflarda)
 TARGET_KEYWORDS: list[str] = [kw.lower() for kw in HH_SEARCH_KEYWORDS] + [
+    "инженер",
     "силовое электрооборудование",
     "релейной защиты",
     "рза",
@@ -132,11 +165,17 @@ TARGET_KEYWORDS: list[str] = [kw.lower() for kw in HH_SEARCH_KEYWORDS] + [
     "energy",
 ]
 
-# 2-MANBA: LinkedIn / Web (DuckDuckGo murakkab qavslarni bloklamasligi uchun sodda so'rovlar)
-LINKEDIN_DDG_QUERIES: list[str] = [
-    "site:linkedin.com/jobs/view Uzbekistan Engineer",
-    "site:linkedin.com/jobs Uzbekistan Electrical Energy Engineer",
-    "site:linkedin.com/jobs Tashkent Инженер Энергетик Проектировщик",
+# 2-MANBA: LinkedIn Public Guest API (DuckDuckGo o'rniga to'g'ridan-to'g'ri LinkedIn serveridan!)
+LINKEDIN_GUEST_SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+LINKEDIN_GUEST_DETAIL_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+
+LINKEDIN_SEARCH_KEYWORDS: list[str] = [
+    "Electrical Engineer",
+    "Energy Engineer",
+    "Project Engineer",
+    "Энергетик",
+    "Инженер ПТО",
+    "Инженер-проектировщик",
 ]
 
 # Telegram Reply Keyboard tugmalari matni
@@ -171,7 +210,6 @@ def auto_setup() -> None:
         "pydantic\n"
         "pyTelegramBotAPI\n"
         "python-dotenv\n"
-        "duckduckgo-search\n"
         "schedule\n"
         "pytz\n"
         "tzdata\n"
@@ -187,6 +225,7 @@ def auto_setup() -> None:
         "RUN python3 -m pip install --no-cache-dir -r requirements.txt\n"
         "COPY . .\n"
         "ENV PORT=10000\n"
+        "ENV PYTHONUNBUFFERED=1\n"
         "EXPOSE 10000\n"
         'CMD ["python3", "agent.py"]\n'
     )
@@ -301,7 +340,6 @@ class VacancyEvaluation(BaseModel):
 # =====================================================================
 
 def load_seen_jobs() -> set[str]:
-    """seen_jobs.txt faylidan avval ko'rilgan barcha vakansiya ID larini o'qiydi."""
     with SEEN_LOCK:
         try:
             if not SEEN_JOBS_FILE.exists():
@@ -315,7 +353,6 @@ def load_seen_jobs() -> set[str]:
 
 
 def clear_seen_jobs() -> None:
-    """seen_jobs.txt faylini tozalaydi (barcha vakansiyalarni qaytadan ko'rish uchun)."""
     with SEEN_LOCK:
         try:
             SEEN_JOBS_FILE.write_text("", encoding="utf-8")
@@ -324,7 +361,6 @@ def clear_seen_jobs() -> None:
 
 
 def mark_job_as_seen(vac_id: str) -> None:
-    """Ko'rib chiqilgan vakansiya ID raqamini seen_jobs.txt fayliga qo'shib qo'yadi."""
     vac_id = str(vac_id).strip()
     if not vac_id:
         return
@@ -337,7 +373,6 @@ def mark_job_as_seen(vac_id: str) -> None:
 
 
 def find_matched_keywords(title: str, description: str, source_kw: str = "") -> list[str]:
-    """Vakansiya sarlavhasi yoki tavsifida TARGET_KEYWORDS ro'yxatidagi so'zlarni topadi."""
     haystack = f"{title} {description}".lower()
     matched: list[str] = []
     if source_kw:
@@ -496,7 +531,7 @@ def extract_contacts_from_vacancy(detail: dict[str, Any], full_text: str) -> str
 
 
 # =====================================================================
-# 8. QIDIRUV YO'NALISHLARI: [hh.uz] VA [LinkedIn] (DIAGNOSTIKA BILAN)
+# 8. QIDIRUV MANBALARI: [hh.uz API] VA [LinkedIn Guest API]
 # =====================================================================
 
 def format_salary(salary_data: dict[str, Any] | None) -> str:
@@ -521,20 +556,15 @@ def fetch_new_hh_uz_vacancies(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     1-YO'NALISH: hh.uz API dan har bir kalit so'z bo'yicha alohida, sodda so'rov yuboradi.
-    Qaytaradi: (yangi_vakansiyalar_ro'yxati, diagnostika_ma'lumotlari)
     """
     now_str = get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n[{now_str} UZT] [hh.uz] {len(keywords)} ta kalit so'z bo'yicha qidirilmoqda...")
+    print(f"\n[{now_str} UZT] [hh.uz] {len(keywords)} ta kalit so'z bo'yicha qidirilmoqda...", flush=True)
 
-    # Haqiqiy brauzer va HH API standartiga mos sarlavha (Cloudflare/HH bloklamasligi uchun)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-    }
+    session = requests.Session()
+    session.headers.update(HH_API_HEADERS)
 
     batch_seen_ids: set[str] = set()
     new_short_vacancies: list[tuple[dict[str, Any], str]] = []
-    total_raw_found = 0
     skipped_seen_count = 0
     api_errors: list[str] = []
 
@@ -548,17 +578,16 @@ def fetch_new_hh_uz_vacancies(
             "page": 0,
         }
         try:
-            resp = requests.get(HH_API_BASE_URL, params=params, headers=headers, timeout=15)
+            resp = session.get(HH_API_BASE_URL, params=params, timeout=15)
             if resp.status_code != 200:
                 err_msg = f"HTTP {resp.status_code} ({kw})"
-                print(f"  [!] [hh.uz] {err_msg}")
+                print(f"  [!] [hh.uz] {err_msg}", flush=True)
                 if len(api_errors) < 3:
                     api_errors.append(err_msg)
                 continue
 
             data = resp.json()
             items = data.get("items") or []
-            total_raw_found += len(items)
 
             for item in items:
                 raw_id = str(item.get("id", "")).strip()
@@ -569,13 +598,10 @@ def fetch_new_hh_uz_vacancies(
                     continue
                 batch_seen_ids.add(vac_id)
 
-                # Agar avval ko'rilgan bo'lsa
                 if vac_id in seen_jobs or raw_id in seen_jobs:
                     skipped_seen_count += 1
                     continue
 
-                # Agar kalit so'z juda umumiy ("Инженер", "Engineer", "Строительный контроль") bo'lsa,
-                # snippet yoki sarlavhada energetika/elektr/loyihalash/ПТО aloqasi borligini tekshiramiz:
                 title_str = str(item.get("name") or "")
                 snip_req = str(((item.get("snippet") or {}).get("requirement")) or "")
                 snip_resp = str(((item.get("snippet") or {}).get("responsibility")) or "")
@@ -591,14 +617,15 @@ def fetch_new_hh_uz_vacancies(
                 new_short_vacancies.append((item, kw))
         except Exception as exc:
             err_msg = f"{kw}: {exc}"
-            print(f"  [!] [hh.uz] Tarmoq xatoligi ({err_msg})")
+            print(f"  [!] [hh.uz] Tarmoq xatoligi ({err_msg})", flush=True)
             if len(api_errors) < 3:
                 api_errors.append(str(exc)[:60])
         time.sleep(0.15)
 
     print(
         f"  [*] [hh.uz] Qidiruv yakunlandi: Jami API dan {len(batch_seen_ids)} ta noyob e'lon olindi -> "
-        f"Yangisi: {len(new_short_vacancies)} ta, Avval ko'rilgani (seen_jobs): {skipped_seen_count} ta."
+        f"Yangisi: {len(new_short_vacancies)} ta, Avval ko'rilgani (seen_jobs): {skipped_seen_count} ta.",
+        flush=True,
     )
 
     detailed_vacancies: list[dict[str, Any]] = []
@@ -609,7 +636,7 @@ def fetch_new_hh_uz_vacancies(
         vac_id = f"hh_{raw_id}"
         detail_url = f"{HH_API_BASE_URL}/{raw_id}"
         try:
-            resp = requests.get(detail_url, headers=headers, timeout=15)
+            resp = session.get(detail_url, timeout=15)
             detail = resp.json() if resp.status_code == 200 else item
         except Exception:
             detail = item
@@ -660,28 +687,69 @@ def fetch_new_hh_uz_vacancies(
     return detailed_vacancies, diag
 
 
-def _extract_linkedin_job_id(url: str) -> str:
-    match = re.search(r"(\d{8,12})", url)
-    if match:
-        return f"li_{match.group(1)}"
-    clean_url = url.split("?")[0].rstrip("/").lower()
-    digest = hashlib.md5(clean_url.encode("utf-8")).hexdigest()[:12]
-    return f"li_{digest}"
+def _parse_linkedin_guest_html(html_text: str, source_kw: str) -> list[dict[str, Any]]:
+    """
+    LinkedIn Guest Jobs API (jobs-guest/jobs/api/seeMoreJobPostings/search) qaytargan
+    HTML kartochkalardan vakansiya ID, sarlavha, kompaniya, manzil va havolani ajratib oladi.
+    """
+    cards: list[dict[str, Any]] = []
+    li_blocks = re.findall(r"<li[^>]*>(.*?)</li>", html_text, flags=re.DOTALL | re.IGNORECASE)
 
+    for block in li_blocks:
+        # 1. Job ID
+        urn_match = re.search(r"urn:li:jobPosting:(\d+)", block)
+        href_match = re.search(r'href="([^"]*linkedin\.com/jobs/view/[^"]+)"', block, flags=re.IGNORECASE)
 
-def _parse_linkedin_title_and_company(raw_title: str) -> tuple[str, str]:
-    cleaned = re.sub(r"\s*\|\s*LinkedIn.*$", "", raw_title, flags=re.IGNORECASE).strip()
-    hiring_match = re.match(r"^(.*?)\s+hiring\s+(.*?)(?:\s+in\s+.*)?$", cleaned, flags=re.IGNORECASE)
-    if hiring_match:
-        company = hiring_match.group(1).strip()
-        role = hiring_match.group(2).strip()
-        return role or cleaned, company or "LinkedIn (Kompaniya e'londa)"
+        job_num = ""
+        if urn_match:
+            job_num = urn_match.group(1)
+        elif href_match:
+            id_in_url = re.search(r"(\d{8,12})", href_match.group(1))
+            if id_in_url:
+                job_num = id_in_url.group(1)
 
-    parts = [p.strip() for p in re.split(r"\s+[-–—]\s+", cleaned) if p.strip()]
-    if len(parts) >= 2:
-        return parts[0], parts[1]
+        if not job_num and not href_match:
+            continue
 
-    return cleaned, "LinkedIn (O'zbekiston)"
+        raw_url = href_match.group(1).split("?")[0] if href_match else f"https://www.linkedin.com/jobs/view/{job_num}"
+        vac_id = f"li_{job_num}" if job_num else f"li_{hashlib.md5(raw_url.encode()).hexdigest()[:10]}"
+
+        # 2. Lavozim nomi (base-search-card__title)
+        title_match = re.search(
+            r'<h3[^>]*class="[^"]*base-search-card__title[^"]*"[^>]*>(.*?)</h3>',
+            block,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        title = clean_html(title_match.group(1)) if title_match else "Engineer (LinkedIn)"
+
+        # 3. Kompaniya nomi (base-search-card__subtitle)
+        comp_match = re.search(
+            r'<h4[^>]*class="[^"]*base-search-card__subtitle[^"]*"[^>]*>(.*?)</h4>',
+            block,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        company = clean_html(comp_match.group(1)) if comp_match else "LinkedIn Employer"
+
+        # 4. Joylashuv (job-search-card__location)
+        loc_match = re.search(
+            r'<span[^>]*class="[^"]*job-search-card__location[^"]*"[^>]*>(.*?)</span>',
+            block,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        location = clean_html(loc_match.group(1)) if loc_match else "O'zbekiston"
+
+        cards.append(
+            {
+                "id": vac_id,
+                "job_num": job_num,
+                "title": title,
+                "company": company,
+                "location": location,
+                "url": raw_url,
+                "source_kw": source_kw,
+            }
+        )
+    return cards
 
 
 def search_linkedin_jobs(
@@ -689,91 +757,115 @@ def search_linkedin_jobs(
     max_results: int = MAX_LINKEDIN_JOBS_PER_SCAN,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    2-YO'NALISH: duckduckgo_search (DDGS) orqali LinkedIn vakansiyalarini qidiradi.
-    Render bulutli IP blokirovkalarini aylanib o'tish uchun bir nechta backend ('api', 'html', 'lite') sinab ko'riladi.
+    2-YO'NALISH: DuckDuckGo (ddgs) O'RNIGA to'g'ridan-to'g'ri LinkedIn Public Guest API
+    (https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search) va
+    haqiqiy brauzer headers yordamida O'zbekistondagi LinkedIn vakansiyalarini oladi.
     """
     if STOP_SCAN_EVENT.is_set():
         return [], {"unique_found": 0, "new_count": 0, "skipped_seen": 0, "errors": []}
 
     now_str = get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n[{now_str} UZT] [LinkedIn] DuckDuckGo (DDGS) orqali vakansiyalar qidirilmoqda...")
+    print(f"\n[{now_str} UZT] [LinkedIn Guest API] To'g'ridan-to'g'ri LinkedIn serveridan qidirilmoqda...", flush=True)
 
-    linkedin_vacancies: list[dict[str, Any]] = []
-    skipped_seen = 0
+    session = requests.Session()
+    session.headers.update(BROWSER_HEADERS)
+
     batch_ids: set[str] = set()
-    ddg_errors: list[str] = []
+    raw_new_cards: list[dict[str, Any]] = []
+    skipped_seen = 0
+    li_errors: list[str] = []
 
-    for ddg_query in LINKEDIN_DDG_QUERIES:
+    for kw in LINKEDIN_SEARCH_KEYWORDS:
         if STOP_SCAN_EVENT.is_set():
             break
-        results: list[dict[str, Any]] = []
-        # Bir nechta DDGS backend orqali urinib ko'ramiz
-        for backend_name in ("api", "html", "lite"):
+        params = {
+            "keywords": kw,
+            "location": "Uzbekistan",
+            "start": 0,
+        }
+        try:
+            resp = session.get(LINKEDIN_GUEST_SEARCH_URL, params=params, timeout=15)
+            if resp.status_code != 200:
+                err_msg = f"HTTP {resp.status_code} ({kw})"
+                print(f"  [!] [LinkedIn API] {err_msg}", flush=True)
+                if len(li_errors) < 2:
+                    li_errors.append(err_msg)
+                continue
+
+            parsed_cards = _parse_linkedin_guest_html(resp.text, source_kw=kw)
+            for card in parsed_cards:
+                vac_id = card["id"]
+                if vac_id in batch_ids:
+                    continue
+                batch_ids.add(vac_id)
+
+                if vac_id in seen_jobs:
+                    skipped_seen += 1
+                    continue
+
+                raw_new_cards.append(card)
+        except Exception as exc:
+            print(f"  [!] [LinkedIn API] Xatolik ({kw}): {exc}", flush=True)
+            if len(li_errors) < 2:
+                li_errors.append(str(exc)[:60])
+        time.sleep(0.4)
+
+    # Har bir yangi LinkedIn vakansiyasining to'liq tavsifini olishga harakat qilamiz
+    linkedin_vacancies: list[dict[str, Any]] = []
+    for card in raw_new_cards[:max_results]:
+        if STOP_SCAN_EVENT.is_set():
+            break
+        job_num = card.get("job_num", "")
+        description_text = f"{card['title']} — {card['company']} ({card['location']})"
+
+        if job_num:
+            detail_url = LINKEDIN_GUEST_DETAIL_URL.format(job_id=job_num)
             try:
-                with DDGS() as ddgs:
-                    try:
-                        results = list(ddgs.text(ddg_query, max_results=max_results, backend=backend_name))
-                    except TypeError:
-                        results = list(ddgs.text(ddg_query, max_results=max_results))
-                if results:
-                    break
-            except Exception as exc:
-                if backend_name == "lite" and len(ddg_errors) < 2:
-                    ddg_errors.append(str(exc)[:60])
-                time.sleep(0.4)
+                d_resp = session.get(detail_url, timeout=12)
+                if d_resp.status_code == 200 and d_resp.text:
+                    desc_match = re.search(
+                        r'<div[^>]*class="[^"]*show-more-less-html__markup[^"]*"[^>]*>(.*?)</div>',
+                        d_resp.text,
+                        flags=re.DOTALL | re.IGNORECASE,
+                    )
+                    if desc_match:
+                        description_text = clean_html(desc_match.group(1))
+            except Exception:
+                pass
+            time.sleep(0.25)
 
-        for res in results:
-            if not isinstance(res, dict):
-                continue
-            raw_title = str(res.get("title") or "").strip()
-            href = str(res.get("href") or res.get("url") or "").strip()
-            snippet = clean_html(str(res.get("body") or res.get("snippet") or ""))
+        contacts = extract_contacts_from_vacancy({}, description_text)
+        matched_kws = find_matched_keywords(card["title"], description_text, source_kw=card["source_kw"])
 
-            if not href or "linkedin.com" not in href.lower():
-                continue
-
-            vac_id = _extract_linkedin_job_id(href)
-            if vac_id in batch_ids:
-                continue
-            batch_ids.add(vac_id)
-
-            if vac_id in seen_jobs:
-                skipped_seen += 1
-                continue
-
-            job_title, company_name = _parse_linkedin_title_and_company(raw_title)
-            contacts = extract_contacts_from_vacancy({}, snippet)
-            matched_kws = find_matched_keywords(job_title, snippet, source_kw="LinkedIn")
-
-            linkedin_vacancies.append(
-                {
-                    "id": vac_id,
-                    "source": "[LinkedIn]",
-                    "title": job_title or raw_title or "Energy / Electrical Engineer",
-                    "company": company_name,
-                    "location": "O'zbekiston (LinkedIn)",
-                    "salary": "Suhbat asosida (LinkedIn)",
-                    "experience": "Ko'rsatilmagan",
-                    "employment": "Full-time",
-                    "skills": [],
-                    "matched_keywords": matched_kws,
-                    "description": f"{raw_title}\n\n{snippet}".strip(),
-                    "contacts": contacts or "LinkedIn havolasi orqali (Easy Apply / HR)",
-                    "url": href,
-                    "published_at": get_tashkent_now().strftime("%Y-%m-%d"),
-                }
-            )
-        time.sleep(0.5)
+        linkedin_vacancies.append(
+            {
+                "id": card["id"],
+                "source": "[LinkedIn]",
+                "title": card["title"],
+                "company": card["company"],
+                "location": card["location"],
+                "salary": "Suhbat asosida (LinkedIn)",
+                "experience": "Ko'rsatilmagan",
+                "employment": "Full-time",
+                "skills": [],
+                "matched_keywords": matched_kws,
+                "description": description_text,
+                "contacts": contacts or "LinkedIn havolasi orqali (Easy Apply / HR)",
+                "url": card["url"],
+                "published_at": get_tashkent_now().strftime("%Y-%m-%d"),
+            }
+        )
 
     print(
-        f"  [*] [LinkedIn] Qidiruv yakunlandi: {len(linkedin_vacancies)} ta YANGI vakansiya topildi "
-        f"({skipped_seen} ta avval ko'rilgan)."
+        f"  [*] [LinkedIn Guest API] Yakunlandi: Jami {len(batch_ids)} ta e'lon topildi -> "
+        f"Yangisi: {len(linkedin_vacancies)} ta, Avval ko'rilgan: {skipped_seen} ta.",
+        flush=True,
     )
     diag = {
         "unique_found": len(batch_ids),
         "new_count": len(linkedin_vacancies),
         "skipped_seen": skipped_seen,
-        "errors": ddg_errors,
+        "errors": li_errors,
     }
     return linkedin_vacancies, diag
 
@@ -891,7 +983,7 @@ Rezyume matni:
             raw_json = json.loads(response.text or "{}")
             evaluation = VacancyEvaluation(**raw_json)
     except Exception as exc:
-        print(f"     [!] Gemini API xatoligi ({exc}) — zaxira tahlil ishlatildi.")
+        print(f"     [!] Gemini API xatoligi ({exc}) — zaxira tahlil ishlatildi.", flush=True)
         evaluation = build_fallback_evaluation(vacancy, selected_lang)
 
     api_contacts = str(vacancy.get("contacts") or "").strip()
@@ -927,11 +1019,10 @@ def save_state(state: dict[str, dict[str, Any]]) -> None:
                 encoding="utf-8",
             )
         except Exception as exc:
-            print(f"[OGOHLANTIRISH] Holat faylini saqlashda xatolik: {exc}")
+            print(f"[OGOHLANTIRISH] Holat faylini saqlashda xatolik: {exc}", flush=True)
 
 
 def build_main_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Telegram bot pastida har doim ko'rinib turuvchi boshqaruv menyusi."""
     markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True, row_width=2)
     btn_now = KeyboardButton(BTN_SEARCH_NOW)
     btn_clear = KeyboardButton(BTN_CLEAR_SEEN)
@@ -1063,24 +1154,24 @@ def run_single_scan(
                         f"🔍 <b>Qidiruv boshlandi...</b> ({html.escape(trigger_label)})\n"
                         f"🕒 Toshkent vaqti: <code>{get_tashkent_now().strftime('%H:%M:%S')}</code>\n"
                         f"📂 Tarixda ko‘rilganlar (seen_jobs): <code>{len(seen_jobs)}</code> ta\n"
-                        "⏳ Manbalar (<code>[hh.uz]</code> va <code>[LinkedIn]</code>) tekshirilmoqda..."
+                        "⏳ Manbalar (<code>[hh.uz API]</code> va <code>[LinkedIn Guest API]</code>) tekshirilmoqda..."
                     ),
                     parse_mode="HTML",
                     reply_markup=build_main_reply_keyboard(),
                 )
             except Exception as exc:
-                print(f"[!] Boshlanish xabarini yuborishda xatolik: {exc}")
+                print(f"[!] Boshlanish xabarini yuborishda xatolik: {exc}", flush=True)
 
         state = load_state()
 
-        # 1-yo'nalish: hh.uz (alohida sodda kalit so'zlar bilan)
+        # 1-yo'nalish: hh.uz API
         hh_vacancies, hh_diag = fetch_new_hh_uz_vacancies(
             HH_SEARCH_KEYWORDS,
             seen_jobs=seen_jobs,
             max_items=MAX_HH_VACANCIES_PER_SCAN,
         )
 
-        # 2-yo'nalish: LinkedIn (duckduckgo-search)
+        # 2-yo'nalish: LinkedIn Guest API (DuckDuckGo siz!)
         linkedin_vacancies, li_diag = search_linkedin_jobs(
             seen_jobs=seen_jobs,
             max_results=MAX_LINKEDIN_JOBS_PER_SCAN,
@@ -1100,21 +1191,20 @@ def run_single_scan(
                 pass
             return
 
-        # Diagnostika satri (foydalanuvchi nima bo'layotganini aniq ko'rishi uchun)
         diag_text = (
             f"📊 <b>Qidiruv diagnostikasi:</b>\n"
-            f"• <code>[hh.uz]</code>: Jami topildi <b>{hh_diag['unique_found']}</b> ta "
+            f"• <code>[hh.uz API]</code>: Jami topildi <b>{hh_diag['unique_found']}</b> ta "
             f"(Yangisi: <b>{hh_diag['new_count']}</b> ta | Avval ko‘rilgan: <b>{hh_diag['skipped_seen']}</b> ta)\n"
-            f"• <code>[LinkedIn]</code>: Jami topildi <b>{li_diag['unique_found']}</b> ta "
+            f"• <code>[LinkedIn API]</code>: Jami topildi <b>{li_diag['unique_found']}</b> ta "
             f"(Yangisi: <b>{li_diag['new_count']}</b> ta | Avval ko‘rilgan: <b>{li_diag['skipped_seen']}</b> ta)"
         )
         if hh_diag["errors"]:
-            diag_text += f"\n⚠️ <code>[hh.uz xatolik]</code>: {html.escape(', '.join(hh_diag['errors']))}"
+            diag_text += f"\n⚠️ <code>[hh.uz izoh]</code>: {html.escape(', '.join(hh_diag['errors']))}"
         if li_diag["errors"]:
-            diag_text += f"\n⚠️ <code>[LinkedIn/DDGS izoh]</code>: {html.escape(', '.join(li_diag['errors']))}"
+            diag_text += f"\n⚠️ <code>[LinkedIn izoh]</code>: {html.escape(', '.join(li_diag['errors']))}"
 
         if not all_new_vacancies:
-            print("  [*] Yangi (ko'rilmagan) vakansiyalar topilmadi.")
+            print("  [*] Yangi (ko'rilmagan) vakansiyalar topilmadi.", flush=True)
             if notify_start_and_finish:
                 hint = ""
                 if hh_diag["skipped_seen"] > 0 or li_diag["skipped_seen"] > 0:
@@ -1134,11 +1224,10 @@ def run_single_scan(
                     pass
             return
 
-        # Agar yangi vakansiyalar topilgan bo'lsa, oldin diagnostika xabarini yuboramiz
         try:
             bot.send_message(
                 chat_id=chat_id,
-                text=f"{diag_text}\n\n🚀 <b>{len(all_new_vacancies)} ta yangi vakansiya yuborilmoqda...</b>",
+                text=f"{diag_text}\n\n🚀 <b>{len(all_new_vacancies)} ta yangi vakansiya tahlil qilinib yuborilmoqda...</b>",
                 parse_mode="HTML",
             )
         except Exception:
@@ -1158,7 +1247,8 @@ def run_single_scan(
 
             print(
                 f"\n  -> ({idx}/{len(all_new_vacancies)}) {source_tag} [ID: {vac_id}] "
-                f"{vac.get('title')} — {vac.get('company')}"
+                f"{vac.get('title')} — {vac.get('company')}",
+                flush=True,
             )
 
             evaluation, resume_lang = analyze_vacancy_with_gemini(client, vac, resumes)
@@ -1189,7 +1279,7 @@ def run_single_scan(
                     seen_jobs.add(vac_id)
                     sent_high_count += 1
                 except Exception as tg_exc:
-                    print(f"     [!] Telegramga yuborishda xatolik: {tg_exc}")
+                    print(f"     [!] Telegramga yuborishda xatolik: {tg_exc}", flush=True)
 
                 time.sleep(1.0)
                 continue
@@ -1223,7 +1313,7 @@ def run_single_scan(
                 seen_jobs.add(vac_id)
                 sent_other_count += 1
             except Exception as tg_exc:
-                print(f"     [!] Telegramga yuborishda xatolik: {tg_exc}")
+                print(f"     [!] Telegramga yuborishda xatolik: {tg_exc}", flush=True)
 
             time.sleep(1.0)
 
@@ -1243,10 +1333,10 @@ def run_single_scan(
                     reply_markup=build_main_reply_keyboard(),
                 )
             except Exception as exc:
-                print(f"[!] Yakuniy hisobotni yuborishda xatolik: {exc}")
+                print(f"[!] Yakuniy hisobotni yuborishda xatolik: {exc}", flush=True)
 
     except Exception as unexpected_exc:
-        print(f"\n[!] Qidiruv jarayonida kutilmagan xatolik: {unexpected_exc}")
+        print(f"\n[!] Qidiruv jarayonida kutilmagan xatolik: {unexpected_exc}", flush=True)
     finally:
         SCAN_LOCK.release()
 
@@ -1288,7 +1378,7 @@ def schedule_runner_loop() -> None:
         try:
             schedule.run_pending()
         except Exception as exc:
-            print(f"[!] Jadval tekshiruvchisida xatolik: {exc}")
+            print(f"[!] Jadval tekshiruvchisida xatolik: {exc}", flush=True)
         time.sleep(1)
 
 
@@ -1311,11 +1401,12 @@ def register_bot_handlers(
             help_text = (
                 "🤖 <b>Energetika va Muhandislik Vakansiyalari AI Agenti</b>\n\n"
                 f"• <b>Toshkent vaqti:</b> <code>{get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
+                f"• <b>Manbalar:</b> <code>[hh.uz API]</code> + <code>[LinkedIn Guest API]</code> (DuckDuckGo-siz, bloklanmaydigan to‘g‘ridan-to‘g‘ri ulanish)\n"
                 f"• <b>Avtomatik jadval:</b> {sched_status}\n"
                 f"• <b>Tarix bazasi (seen_jobs.txt):</b> {seen_count} ta vakansiya ko‘rilgan.\n\n"
                 "👇 <b>Pastdagi tugmalar orqali boshqarishingiz mumkin:</b>\n"
                 f"• <code>{BTN_SEARCH_NOW}</code> — Hoziroq qidirish.\n"
-                f"• <code>{BTN_CLEAR_SEEN}</code> — Tarixni (seen_jobs.txt) tozalab, barcha e'lonlarni qaytadan olish.\n"
+                f"• <code>{BTN_CLEAR_SEEN}</code> — Tarixni tozalab, barcha e'lonlarni qaytadan olish.\n"
                 f"• <code>{BTN_STOP_SEARCH}</code> — Qidiruvni to‘xtatish.\n"
                 f"• <code>{BTN_RESUME_SCHEDULE}</code> — Jadvalni qayta yoqish."
             )
@@ -1326,7 +1417,7 @@ def register_bot_handlers(
                 reply_markup=build_main_reply_keyboard(),
             )
         except Exception as exc:
-            print(f"[!] /start javobida xatolik: {exc}")
+            print(f"[!] /start javobida xatolik: {exc}", flush=True)
 
     @bot.message_handler(func=lambda m: (m.text or "").strip() in (BTN_SEARCH_NOW, "/scan"))
     def handle_search_now(message: Message) -> None:
@@ -1339,7 +1430,7 @@ def register_bot_handlers(
                 daemon=True,
             ).start()
         except Exception as exc:
-            print(f"[!] Hozir qidirish tugmasida xatolik: {exc}")
+            print(f"[!] Hozir qidirish tugmasida xatolik: {exc}", flush=True)
 
     @bot.message_handler(func=lambda m: (m.text or "").strip() in (BTN_CLEAR_SEEN, "/clear"))
     def handle_clear_seen(message: Message) -> None:
@@ -1358,7 +1449,7 @@ def register_bot_handlers(
                 reply_markup=build_main_reply_keyboard(),
             )
         except Exception as exc:
-            print(f"[!] Tarixni tozalashda xatolik: {exc}")
+            print(f"[!] Tarixni tozalashda xatolik: {exc}", flush=True)
 
     @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_STOP_SEARCH)
     def handle_stop_search(message: Message) -> None:
@@ -1378,7 +1469,7 @@ def register_bot_handlers(
                 reply_markup=build_main_reply_keyboard(),
             )
         except Exception as exc:
-            print(f"[!] Qidiruvni to'xtatish tugmasida xatolik: {exc}")
+            print(f"[!] Qidiruvni to'xtatish tugmasida xatolik: {exc}", flush=True)
 
     @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_RESUME_SCHEDULE)
     def handle_resume_schedule(message: Message) -> None:
@@ -1395,7 +1486,7 @@ def register_bot_handlers(
                 reply_markup=build_main_reply_keyboard(),
             )
         except Exception as exc:
-            print(f"[!] Qayta faollashtirish tugmasida xatolik: {exc}")
+            print(f"[!] Qayta faollashtirish tugmasida xatolik: {exc}", flush=True)
 
     @bot.callback_query_handler(func=lambda call: True)
     def handle_callback(call: CallbackQuery) -> None:
@@ -1458,7 +1549,7 @@ def register_bot_handlers(
                 )
                 bot.answer_callback_query(call.id, "O'tkazib yuborildi ❌")
         except Exception as exc:
-            print(f"[!] Tugmani qayta ishlashda xatolik: {exc}")
+            print(f"[!] Tugmani qayta ishlashda xatolik: {exc}", flush=True)
 
 
 # =====================================================================
@@ -1466,12 +1557,12 @@ def register_bot_handlers(
 # =====================================================================
 
 def main() -> None:
-    print("=" * 88)
-    print(" O'ZBEKISTON ENERGETIKA VA MUHANDISLIK VAKANSIYALARI AI AGENTI (TUZATILGAN QIDIRUV)")
-    print(f" Ishchi papka   : {BASE_DIR}")
-    print(f" Tarix fayli    : {SEEN_JOBS_FILE}")
-    print(f" Toshkent vaqti : {get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S (UTC+5)')}")
-    print("=" * 88)
+    print("=" * 88, flush=True)
+    print(" O'ZBEKISTON ENERGETIKA VA MUHANDISLIK VAKANSIYALARI AI AGENTI (DUCKDUCKGO-SIZ VERSIYA)", flush=True)
+    print(f" Ishchi papka   : {BASE_DIR}", flush=True)
+    print(f" Tarix fayli    : {SEEN_JOBS_FILE}", flush=True)
+    print(f" Toshkent vaqti : {get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S (UTC+5)')}", flush=True)
+    print("=" * 88, flush=True)
 
     auto_setup()
     start_health_check_server()
@@ -1479,7 +1570,7 @@ def main() -> None:
     config = get_config()
     resumes = load_all_resumes()
     seen_initial = load_seen_jobs()
-    print(f"  [+] seen_jobs.txt tekshirildi: bazada {len(seen_initial)} ta ko'rilgan vakansiya mavjud.")
+    print(f"  [+] seen_jobs.txt tekshirildi: bazada {len(seen_initial)} ta ko'rilgan vakansiya mavjud.", flush=True)
 
     client = genai.Client(api_key=config["GEMINI_API_KEY"])
     bot = telebot.TeleBot(config["TELEGRAM_BOT_TOKEN"])
@@ -1494,17 +1585,17 @@ def main() -> None:
         bot.send_message(
             chat_id=config["TELEGRAM_CHAT_ID"],
             text=(
-                "✅ <b>AI Agent yangilandi (Diagnostika + Alohida Kalit So‘zlar)!</b>\n\n"
+                "✅ <b>AI Agent yangilandi (DuckDuckGo o‘rniga to‘g‘ridan-to‘g‘ri LinkedIn Guest API + Brauzer Headers)!</b>\n\n"
                 f"• <b>Toshkent vaqti:</b> <code>{get_tashkent_now().strftime('%H:%M:%S (UTC+5)')}</code>\n"
-                f"• <b>Kalit so‘zlar soni:</b> {len(HH_SEARCH_KEYWORDS)} ta alohida so‘rov\n"
+                "• <b>Manbalar:</b> <code>[hh.uz API]</code> + <code>[LinkedIn Guest API]</code>\n"
                 f"• <b>Tarixda (seen_jobs.txt):</b> {len(seen_initial)} ta vakansiya\n"
-                "• Hoziroq tekshirish uchun <b>[ 🔍 Hozir qidirish ]</b> tugmasini bosing (agar avvalgi vakansiyalarni qaytadan ko‘rmoqchi bo‘lsangiz, avval <b>[ 🗑️ Tarixni tozalash ]</b> ni bosing)."
+                "• Hoziroq tekshirish uchun <b>[ 🔍 Hozir qidirish ]</b> tugmasini bosing."
             ),
             parse_mode="HTML",
             reply_markup=build_main_reply_keyboard(),
         )
     except Exception as exc:
-        print(f"  [!] Boshlang'ich Telegram xabarini yuborishda xatolik: {exc}")
+        print(f"  [!] Boshlang'ich Telegram xabarini yuborishda xatolik: {exc}", flush=True)
 
     while True:
         try:
@@ -1512,7 +1603,7 @@ def main() -> None:
         except KeyboardInterrupt:
             break
         except Exception as poll_exc:
-            print(f"\n[!] Telegram aloqasida uzilish ({poll_exc}). 10 soniyadan so'ng qayta ulanadi...")
+            print(f"\n[!] Telegram aloqasida uzilish ({poll_exc}). 10 soniyadan so'ng qayta ulanadi...", flush=True)
             time.sleep(10)
 
 
