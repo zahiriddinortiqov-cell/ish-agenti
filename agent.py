@@ -27,7 +27,7 @@ import requests
 import schedule
 import telebot
 from dotenv import load_dotenv
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from telebot.types import (
     CallbackQuery,
     InlineKeyboardButton,
