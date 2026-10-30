@@ -2,10 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 O'zbekistondagi Energetika, Loyihalash va Muhandislik Vakansiyalari AI Agenti (Render.com 24/7 Ready)
-Manbalar: [hh.uz] + [LinkedIn (duckduckgo-search)]
-Yangilangan mantiq:
-- Kengaytirilgan kalit so'zlar ro'yxati (Elektroenergetika, Loyihalash/ЭОМ, Qurilish/ПТО/Главный инженер va b.)
-- Foiz cheklovi olib tashlandi (MIN_THRESHOLD = 0%): kalit so'zlarga mos har bir vakansiya darhol Telegramga yuboriladi!
+Manbalar: [hh.uz API] + [LinkedIn / Web (DDGS)]
+Tuzatilgan qidiruv mexanizmi:
+1. hh.uz API uchun alohida, sodda va 100% ishlaydigan kalit so'z so'rovlari (murakkab qavslarsiz)
+   hamda haqiqiy brauzer User-Agent sarlavhasi.
+2. DuckDuckGo (DDGS) uchun sodda qidiruv so'rovlari va backend zaxirasi ('api' -> 'html' -> 'lite').
+3. Telegramning o'zida diagnostika hisoboti (nechta topildi, nechtasi yangi, nechtasi avval ko'rilgan)
+   hamda [ 🗑️ Tarixni tozalash ] tugmasi.
 """
 
 from __future__ import annotations
@@ -75,79 +78,72 @@ GEMINI_MODEL = "gemini-2.5-flash"
 # Avtomatik qidiruv vaqtlari (O'zbekiston vaqti bilan kuniga 2 marta: 09:00 va 19:00)
 SCHEDULE_TIMES_UZT: list[str] = ["09:00", "19:00"]
 
-# FOIZ CHEKLOVI OLIB TASHLANDI (0%): topilgan barcha vakansiyalar Telegramga yuboriladi!
-HIGH_MATCH_THRESHOLD = 80      # 80%+ -> Barcha ma'lumot + tayyor Kover-xat bitta xabarda
-MEDIUM_MATCH_THRESHOLD = 0     # 0%–79% -> [ 📄 Kover-xatni ko‘rish ] / [ ❌ Kerak emas ] tugmalari bilan
+# Foiz cheklovisiz: 0%+ barcha topilgan vakansiyalar yuboriladi
+HIGH_MATCH_THRESHOLD = 80
+MEDIUM_MATCH_THRESHOLD = 0
 
-MAX_HH_VACANCIES_PER_SCAN = 45
-MAX_LINKEDIN_JOBS_PER_SCAN = 20
+MAX_HH_VACANCIES_PER_SCAN = 40
+MAX_LINKEDIN_JOBS_PER_SCAN = 15
 
 # 1-MANBA: hh.uz (HeadHunter API) — O'zbekiston hududi kodi: 97
 HH_API_BASE_URL = "https://api.hh.ru/vacancies"
 UZBEKISTAN_AREA_ID = "97"
 
-# Barcha so'ralgan kalit so'zlar ro'yxati (sarlavha yoki tavsifda tekshirish va qidirish uchun)
-TARGET_KEYWORDS: list[str] = [
+# MUHIM TUZATISH: hh.uz API murakkab qavs va ko'p OR operatorlarida 0 qaytaradi.
+# Shu sababli har bir yo'nalish alohida sodda va aniq kalit so'z sifatida beriladi:
+HH_SEARCH_KEYWORDS: list[str] = [
     # 1. Elektroenergetika yo'nalishi
-    "elektroenergetika",
-    "energetik",
-    "electrical engineer",
-    "энергетик",
-    "электроэнергетика",
-    "главный энергетик",
-    "электрик",
-    "электромонтажник",
+    "Энергетик",
+    "Электроэнергетика",
+    "Главный энергетик",
+    "Электрик",
+    "Электромонтажник",
+    "Electrical Engineer",
+    "Energetik",
+    "Elektroenergetika",
     # 2. Loyihalash va Muhandislik
-    "muhandis-proyektirovshchik",
-    "инженер-проектировщик",
-    "проектировщик",
-    "engineer",
-    "инженер",
-    "промэлектропроект",
-    "электроснабжение",
-    "эом",
-    "электроосвещение",
-    "силовое электрооборудование",
+    "Инженер-проектировщик",
+    "Проектировщик",
+    "Промэлектропроект",
+    "Электроснабжение",
+    "ЭОМ",
+    "Электроосвещение",
+    "Muhandis-proyektirovshchik",
+    "Engineer",
+    "Инженер",
     # 3. Qurilish va Ishlab chiqarish texnik yo'nalishlari
-    "технический директор",
-    "технолог",
-    "главный инженер",
-    "инженер пто",
-    "строительный контроль",
-    "наладчик",
+    "Инженер ПТО",
+    "Главный инженер",
+    "Технический директор",
+    "Технолог",
+    "Строительный контроль",
+    "Наладчик",
 ]
 
-# hh.uz API uchun guruhlangan kengaytirilgan qidiruv so'rovlari
-HH_SEARCH_QUERIES: list[str] = [
-    # 1-guruh: Elektroenergetika
-    (
-        'Elektroenergetika OR Energetik OR "Electrical Engineer" OR Энергетик '
-        'OR Электроэнергетика OR "Главный энергетик" OR Электрик OR Электромонтажник'
-    ),
-    # 2-guruh: Loyihalash va Muhandislik (ЭОМ, Электроснабжение, Проектировщик)
-    (
-        '"Инженер-проектировщик" OR Проектировщик OR Промэлектропроект OR Электроснабжение '
-        'OR ЭОМ OR "Электроосвещение" OR "силовое электрооборудование" OR Muhandis-proyektirovshchik'
-    ),
-    # 3-guruh: Qurilish va Ishlab chiqarish texnik yo'nalishlari
-    (
-        '"Технический директор" OR "Главный инженер" OR "Инженер ПТО" '
-        'OR наладчик OR Технолог OR ("Строительный контроль" AND энерг*)'
-    ),
-    # 4-guruh: Umumiy muhandislik (Engineer / Инженер) energetika va elektr yo'nalishida
-    'Engineer OR Инженер энергети* OR Инженер электр*',
+# Sarlavha va tavsifda tekshiriladigan kalit so'zlar (kichik harflarda)
+TARGET_KEYWORDS: list[str] = [kw.lower() for kw in HH_SEARCH_KEYWORDS] + [
+    "силовое электрооборудование",
+    "релейной защиты",
+    "рза",
+    "кипиа",
+    "асутп",
+    "подстанц",
+    "solar",
+    "energy",
 ]
 
-# 2-MANBA: LinkedIn (DuckDuckGo Search orqali API kalitsiz)
+# 2-MANBA: LinkedIn / Web (DuckDuckGo murakkab qavslarni bloklamasligi uchun sodda so'rovlar)
 LINKEDIN_DDG_QUERIES: list[str] = [
-    'site:linkedin.com/jobs ("Electrical Engineer" OR "Energy" OR "Энергетик" OR "Инженер" OR "Проектировщик" OR "ПТО") "Uzbekistan"',
-    'site:linkedin.com/jobs ("Engineer" OR "Главный инженер" OR "Технический директор" OR "Электроснабжение") "Tashkent"',
+    "site:linkedin.com/jobs/view Uzbekistan Engineer",
+    "site:linkedin.com/jobs Uzbekistan Electrical Energy Engineer",
+    "site:linkedin.com/jobs Tashkent Инженер Энергетик Проектировщик",
 ]
 
 # Telegram Reply Keyboard tugmalari matni
 BTN_SEARCH_NOW = "🔍 Hozir qidirish"
 BTN_STOP_SEARCH = "⏹️ Qidiruvni to‘xtatish"
 BTN_RESUME_SCHEDULE = "▶️ Qayta faollashtirish"
+BTN_CLEAR_SEEN = "🗑️ Tarixni tozalash"
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 PHONE_REGEX = re.compile(r"(?:\+?998[\s\-()]*)?(?:\d{2}[\s\-()]*)\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
@@ -223,8 +219,6 @@ def auto_setup() -> None:
 # =====================================================================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
-    """Render va Koyeb bepul Web Service tarifida portni tekshirganda 200 OK qaytaradi."""
-
     def do_GET(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -320,6 +314,15 @@ def load_seen_jobs() -> set[str]:
             return set()
 
 
+def clear_seen_jobs() -> None:
+    """seen_jobs.txt faylini tozalaydi (barcha vakansiyalarni qaytadan ko'rish uchun)."""
+    with SEEN_LOCK:
+        try:
+            SEEN_JOBS_FILE.write_text("", encoding="utf-8")
+        except Exception as exc:
+            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} faylini tozalashda xatolik: {exc}")
+
+
 def mark_job_as_seen(vac_id: str) -> None:
     """Ko'rib chiqilgan vakansiya ID raqamini seen_jobs.txt fayliga qo'shib qo'yadi."""
     vac_id = str(vac_id).strip()
@@ -333,25 +336,16 @@ def mark_job_as_seen(vac_id: str) -> None:
             print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} fayliga yozishda xatolik: {exc}")
 
 
-def find_matched_keywords(title: str, description: str) -> list[str]:
-    """
-    Vakansiya sarlavhasi yoki tavsifida TARGET_KEYWORDS ro'yxatidagi
-    qaysi kalit so'zlar uchraganini aniqlaydi.
-    """
+def find_matched_keywords(title: str, description: str, source_kw: str = "") -> list[str]:
+    """Vakansiya sarlavhasi yoki tavsifida TARGET_KEYWORDS ro'yxatidagi so'zlarni topadi."""
     haystack = f"{title} {description}".lower()
     matched: list[str] = []
+    if source_kw:
+        matched.append(source_kw)
     for kw in TARGET_KEYWORDS:
-        if kw.lower() in haystack:
-            # Agar "строительный контроль" bo'lsa, energetika/elektr/muhandislikka aloqadorligini tekshiramiz
-            if kw.lower() == "строительный контроль":
-                if any(
-                    energy_word in haystack
-                    for energy_word in ["энерг", "электр", "эом", "пто", "инженер", "подстанц", "кабел", "сет"]
-                ):
-                    matched.append(kw)
-            else:
-                matched.append(kw)
-    return matched
+        if kw in haystack and kw.lower() not in [m.lower() for m in matched]:
+            matched.append(kw)
+    return matched[:6]
 
 
 # =====================================================================
@@ -359,7 +353,6 @@ def find_matched_keywords(title: str, description: str) -> list[str]:
 # =====================================================================
 
 def get_config() -> dict[str, str]:
-    """Maxfiy kalitlarni .env faylidan yoki Render Environment Variables dan o'qib oladi."""
     env_path = BASE_DIR / ".env"
     load_dotenv(dotenv_path=env_path)
 
@@ -377,10 +370,6 @@ def get_config() -> dict[str, str]:
 
     if missing:
         print("\n[XATOLIK] Quyidagi muhim kalitlar topilmadi:", ", ".join(missing))
-        print(f"Lokal kompyuterda {env_path} fayliga yoki Render Environment Variables bo'limiga kiriting:\n")
-        print("GEMINI_API_KEY=AIzaSy...")
-        print("TELEGRAM_BOT_TOKEN=123456789:AAF...")
-        print("TELEGRAM_CHAT_ID=123456789")
         sys.exit(1)
 
     return {
@@ -395,7 +384,6 @@ def get_config() -> dict[str, str]:
 # =====================================================================
 
 def extract_text_from_pdf(pdf_path: Path) -> str:
-    """PDF fayldan matnni o'qib oladi."""
     if not pdf_path.exists():
         return ""
     try:
@@ -412,7 +400,6 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
 
 
 def load_all_resumes() -> dict[str, str]:
-    """3 tildagi PDF rezyumelarni o'qiydi (agar PDF topilmasa ham dastur to'xtab qolmaydi)."""
     resumes: dict[str, str] = {}
     print("\n[1/4] PDF rezyumelar tekshirilmoqda...")
     for lang, path in RESUME_FILES.items():
@@ -434,7 +421,6 @@ def load_all_resumes() -> dict[str, str]:
 
 
 def detect_language_fast(text: str) -> Literal["uz", "ru", "en"]:
-    """Vakansiya matnining tilini dastlabki tezkor usulda aniqlaydi."""
     sample = text.lower()
     uz_markers = [
         "o‘", "o'", "g‘", "g'", "bo'yicha", "uchun", "talablar",
@@ -470,7 +456,6 @@ def detect_language_fast(text: str) -> Literal["uz", "ru", "en"]:
 
 
 def clean_html(raw_html: str) -> str:
-    """HTML teglar va ortiqcha bo'shliqlarni tozalaydi."""
     if not raw_html:
         return ""
     no_tags = re.sub(r"<[^>]+>", " ", raw_html)
@@ -479,7 +464,6 @@ def clean_html(raw_html: str) -> str:
 
 
 def extract_contacts_from_vacancy(detail: dict[str, Any], full_text: str) -> str:
-    """API contacts bloki va vakansiya matnidan email, telefon va kontakt shaxsni ajratib oladi."""
     parts: list[str] = []
     contacts = detail.get("contacts") or {}
     if isinstance(contacts, dict):
@@ -512,7 +496,7 @@ def extract_contacts_from_vacancy(detail: dict[str, Any], full_text: str) -> str
 
 
 # =====================================================================
-# 8. QIDIRUV YO'NALISHLARI: [hh.uz] VA [LinkedIn]
+# 8. QIDIRUV YO'NALISHLARI: [hh.uz] VA [LinkedIn] (DIAGNOSTIKA BILAN)
 # =====================================================================
 
 def format_salary(salary_data: dict[str, Any] | None) -> str:
@@ -531,42 +515,52 @@ def format_salary(salary_data: dict[str, Any] | None) -> str:
 
 
 def fetch_new_hh_uz_vacancies(
-    queries: list[str],
+    keywords: list[str],
     seen_jobs: set[str],
     max_items: int = MAX_HH_VACANCIES_PER_SCAN,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    1-YO'NALISH: hh.uz API orqali kengaytirilgan kalit so'zlar ro'yxati bo'yicha
-    O'zbekistondagi yangi vakansiyalarni qidiradi.
+    1-YO'NALISH: hh.uz API dan har bir kalit so'z bo'yicha alohida, sodda so'rov yuboradi.
+    Qaytaradi: (yangi_vakansiyalar_ro'yxati, diagnostika_ma'lumotlari)
     """
     now_str = get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n[{now_str} UZT] [hh.uz] Kengaytirilgan kalit so'zlar bo'yicha qidirilmoqda...")
+    print(f"\n[{now_str} UZT] [hh.uz] {len(keywords)} ta kalit so'z bo'yicha qidirilmoqda...")
+
+    # Haqiqiy brauzer va HH API standartiga mos sarlavha (Cloudflare/HH bloklamasligi uchun)
     headers = {
-        "User-Agent": "UzEnergyJobAgent/9.0 (energy-job-agent@local.uz)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "application/json",
     }
 
     batch_seen_ids: set[str] = set()
-    new_short_vacancies: list[dict[str, Any]] = []
+    new_short_vacancies: list[tuple[dict[str, Any], str]] = []
+    total_raw_found = 0
     skipped_seen_count = 0
+    api_errors: list[str] = []
 
-    for query in queries:
+    for kw in keywords:
         if STOP_SCAN_EVENT.is_set():
             break
         params = {
-            "text": query,
+            "text": kw,
             "area": UZBEKISTAN_AREA_ID,
-            "per_page": 40,
+            "per_page": 20,
             "page": 0,
-            "order_by": "publication_time",
         }
         try:
-            resp = requests.get(HH_API_BASE_URL, params=params, headers=headers, timeout=20)
+            resp = requests.get(HH_API_BASE_URL, params=params, headers=headers, timeout=15)
             if resp.status_code != 200:
-                print(f"  [!] [hh.uz] javob kodi ({resp.status_code}) — so'rov: '{query}'")
+                err_msg = f"HTTP {resp.status_code} ({kw})"
+                print(f"  [!] [hh.uz] {err_msg}")
+                if len(api_errors) < 3:
+                    api_errors.append(err_msg)
                 continue
+
             data = resp.json()
-            for item in data.get("items", []):
+            items = data.get("items") or []
+            total_raw_found += len(items)
+
+            for item in items:
                 raw_id = str(item.get("id", "")).strip()
                 if not raw_id:
                     continue
@@ -575,32 +569,49 @@ def fetch_new_hh_uz_vacancies(
                     continue
                 batch_seen_ids.add(vac_id)
 
+                # Agar avval ko'rilgan bo'lsa
                 if vac_id in seen_jobs or raw_id in seen_jobs:
                     skipped_seen_count += 1
                     continue
 
-                new_short_vacancies.append(item)
+                # Agar kalit so'z juda umumiy ("Инженер", "Engineer", "Строительный контроль") bo'lsa,
+                # snippet yoki sarlavhada energetika/elektr/loyihalash/ПТО aloqasi borligini tekshiramiz:
+                title_str = str(item.get("name") or "")
+                snip_req = str(((item.get("snippet") or {}).get("requirement")) or "")
+                snip_resp = str(((item.get("snippet") or {}).get("responsibility")) or "")
+                combined_short = f"{title_str} {snip_req} {snip_resp}".lower()
+
+                if kw.lower() in ("строительный контроль", "технолог"):
+                    if not any(
+                        w in combined_short
+                        for w in ["энерг", "электр", "эом", "пто", "проектир", "инженер", "сет", "кабел", "подстанц", "кипиа", "асутп"]
+                    ):
+                        continue
+
+                new_short_vacancies.append((item, kw))
         except Exception as exc:
-            print(f"  [!] [hh.uz] Tarmoq xatoligi ('{query}'): {exc}")
-        time.sleep(0.3)
+            err_msg = f"{kw}: {exc}"
+            print(f"  [!] [hh.uz] Tarmoq xatoligi ({err_msg})")
+            if len(api_errors) < 3:
+                api_errors.append(str(exc)[:60])
+        time.sleep(0.15)
 
     print(
-        f"  [*] [hh.uz] Qidiruv yakunlandi: {len(new_short_vacancies)} ta YANGI vakansiya topildi "
-        f"({skipped_seen_count} ta avval ko'rilgan vakansiya tashlab ketildi)."
+        f"  [*] [hh.uz] Qidiruv yakunlandi: Jami API dan {len(batch_seen_ids)} ta noyob e'lon olindi -> "
+        f"Yangisi: {len(new_short_vacancies)} ta, Avval ko'rilgani (seen_jobs): {skipped_seen_count} ta."
     )
 
     detailed_vacancies: list[dict[str, Any]] = []
-    for item in new_short_vacancies[:max_items]:
+    for item, source_kw in new_short_vacancies[:max_items]:
         if STOP_SCAN_EVENT.is_set():
             break
         raw_id = str(item.get("id")).strip()
         vac_id = f"hh_{raw_id}"
         detail_url = f"{HH_API_BASE_URL}/{raw_id}"
         try:
-            resp = requests.get(detail_url, headers=headers, timeout=20)
+            resp = requests.get(detail_url, headers=headers, timeout=15)
             detail = resp.json() if resp.status_code == 200 else item
-        except Exception as exc:
-            print(f"  [!] [hh.uz] Vakansiya #{raw_id} tafsilotini yuklashda xatolik: {exc}")
+        except Exception:
             detail = item
 
         title = detail.get("name", "Noma'lum vakansiya")
@@ -616,7 +627,7 @@ def fetch_new_hh_uz_vacancies(
         snippet_resp = ((item.get("snippet") or {}).get("responsibility") or "")
         full_text = clean_html(raw_desc) or clean_html(f"{snippet_req} {snippet_resp}")
 
-        matched_kws = find_matched_keywords(title, full_text)
+        matched_kws = find_matched_keywords(title, full_text, source_kw=source_kw)
         contact_info = extract_contacts_from_vacancy(detail, full_text)
         key_skills = [s.get("name", "") for s in detail.get("key_skills", []) if s.get("name")]
 
@@ -638,9 +649,15 @@ def fetch_new_hh_uz_vacancies(
                 "published_at": detail.get("published_at", ""),
             }
         )
-        time.sleep(0.2)
+        time.sleep(0.15)
 
-    return detailed_vacancies
+    diag = {
+        "unique_found": len(batch_seen_ids),
+        "new_count": len(detailed_vacancies),
+        "skipped_seen": skipped_seen_count,
+        "errors": api_errors,
+    }
+    return detailed_vacancies, diag
 
 
 def _extract_linkedin_job_id(url: str) -> str:
@@ -670,10 +687,13 @@ def _parse_linkedin_title_and_company(raw_title: str) -> tuple[str, str]:
 def search_linkedin_jobs(
     seen_jobs: set[str],
     max_results: int = MAX_LINKEDIN_JOBS_PER_SCAN,
-) -> list[dict[str, Any]]:
-    """2-YO'NALISH: duckduckgo_search (DDGS) orqali LinkedIn vakansiyalarini qidiradi."""
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    2-YO'NALISH: duckduckgo_search (DDGS) orqali LinkedIn vakansiyalarini qidiradi.
+    Render bulutli IP blokirovkalarini aylanib o'tish uchun bir nechta backend ('api', 'html', 'lite') sinab ko'riladi.
+    """
     if STOP_SCAN_EVENT.is_set():
-        return []
+        return [], {"unique_found": 0, "new_count": 0, "skipped_seen": 0, "errors": []}
 
     now_str = get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[{now_str} UZT] [LinkedIn] DuckDuckGo (DDGS) orqali vakansiyalar qidirilmoqda...")
@@ -681,16 +701,26 @@ def search_linkedin_jobs(
     linkedin_vacancies: list[dict[str, Any]] = []
     skipped_seen = 0
     batch_ids: set[str] = set()
+    ddg_errors: list[str] = []
 
     for ddg_query in LINKEDIN_DDG_QUERIES:
         if STOP_SCAN_EVENT.is_set():
             break
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(ddg_query, max_results=max_results))
-        except Exception as exc:
-            print(f"  [!] [LinkedIn / DDGS] Qidiruvda xatolik: {exc}")
-            continue
+        results: list[dict[str, Any]] = []
+        # Bir nechta DDGS backend orqali urinib ko'ramiz
+        for backend_name in ("api", "html", "lite"):
+            try:
+                with DDGS() as ddgs:
+                    try:
+                        results = list(ddgs.text(ddg_query, max_results=max_results, backend=backend_name))
+                    except TypeError:
+                        results = list(ddgs.text(ddg_query, max_results=max_results))
+                if results:
+                    break
+            except Exception as exc:
+                if backend_name == "lite" and len(ddg_errors) < 2:
+                    ddg_errors.append(str(exc)[:60])
+                time.sleep(0.4)
 
         for res in results:
             if not isinstance(res, dict):
@@ -699,7 +729,7 @@ def search_linkedin_jobs(
             href = str(res.get("href") or res.get("url") or "").strip()
             snippet = clean_html(str(res.get("body") or res.get("snippet") or ""))
 
-            if not href or "linkedin.com/jobs" not in href.lower():
+            if not href or "linkedin.com" not in href.lower():
                 continue
 
             vac_id = _extract_linkedin_job_id(href)
@@ -713,7 +743,7 @@ def search_linkedin_jobs(
 
             job_title, company_name = _parse_linkedin_title_and_company(raw_title)
             contacts = extract_contacts_from_vacancy({}, snippet)
-            matched_kws = find_matched_keywords(job_title, snippet)
+            matched_kws = find_matched_keywords(job_title, snippet, source_kw="LinkedIn")
 
             linkedin_vacancies.append(
                 {
@@ -737,33 +767,15 @@ def search_linkedin_jobs(
 
     print(
         f"  [*] [LinkedIn] Qidiruv yakunlandi: {len(linkedin_vacancies)} ta YANGI vakansiya topildi "
-        f"({skipped_seen} ta avval ko'rilgan vakansiya tashlab ketildi)."
+        f"({skipped_seen} ta avval ko'rilgan)."
     )
-    return linkedin_vacancies
-
-
-def load_custom_local_vacancies(custom_file: Path, seen_jobs: set[str]) -> list[dict[str, Any]]:
-    if not custom_file.exists():
-        return []
-    try:
-        items = json.loads(custom_file.read_text(encoding="utf-8"))
-        if not isinstance(items, list):
-            return []
-        new_items: list[dict[str, Any]] = []
-        for idx, item in enumerate(items, start=1):
-            if not isinstance(item, dict):
-                continue
-            vid = str(item.get("id") or f"custom_{idx}").strip()
-            item["id"] = vid
-            item.setdefault("source", "[Lokal]")
-            if vid not in seen_jobs:
-                new_items.append(item)
-        if new_items:
-            print(f"  [+] {custom_file.name} faylidan {len(new_items)} ta yangi vakansiya olindi.")
-        return new_items
-    except Exception as exc:
-        print(f"  [!] {custom_file.name} faylini o'qishda xatolik: {exc}")
-        return []
+    diag = {
+        "unique_found": len(batch_ids),
+        "new_count": len(linkedin_vacancies),
+        "skipped_seen": skipped_seen,
+        "errors": ddg_errors,
+    }
+    return linkedin_vacancies, diag
 
 
 # =====================================================================
@@ -774,10 +786,6 @@ def build_fallback_evaluation(
     vacancy: dict[str, Any],
     selected_lang: Literal["uz", "ru", "en"],
 ) -> VacancyEvaluation:
-    """
-    Agar Gemini API bepul limiti (429 Quota) vaqtincha tugasa ham, topilgan vakansiya
-    yo'qolib qolmasligi uchun zaxira tahlil va tayyor Cover Letter qaytaradi.
-    """
     title = vacancy.get("title", "Инженер-энергетик")
     company = vacancy.get("company", "Компания")
     kws = vacancy.get("matched_keywords") or ["Energetika", "AutoCAD", "MS Office"]
@@ -826,10 +834,6 @@ def analyze_vacancy_with_gemini(
     vacancy: dict[str, Any],
     resumes: dict[str, str],
 ) -> tuple[VacancyEvaluation, str]:
-    """
-    Vakansiyani mos tildagi PDF rezyume bilan solishtiradi.
-    Har qanday moslik foizida ham Cover Letter tayyorlaydi va API xatoligida zaxira javob qaytaradi.
-    """
     combined_vac_text = f"{vacancy.get('title', '')}\n{vacancy.get('description', '')}"
     pre_detected_lang = detect_language_fast(combined_vac_text)
 
@@ -844,14 +848,14 @@ def analyze_vacancy_with_gemini(
 Siz O'zbekistondagi energetika, loyihalash (ЭОМ, Электроснабжение) va muhandislik bo'yicha HR-ekspert va karyera maslahatchisisiz.
 
 QAT'IY BAHOLASH SHARTLARI:
-1. STAJ TALABINI INOВATGA OLMANG:
+1. STAJ TALABINI INOBATGA OLMANG:
    - Nomzod yangi bitiruvchi (Junior mutaxassis).
    - Vakansiyada "1–3 yil", "3–6 yil staj kerak" deyilgan bo'lsa ham, bu holat moslik foizini (`match_score`) UMUMAN TUSHIRMASIN!
 2. AUTOCAD, ЭОМ, ПТО VA MS OFFICE KO'NIKMALARIGA MAKSIMAL BALL:
    - Nomzod **AutoCAD** (2D/3D chizmalar, bir chiziqli elektr sxemalar, ЭОМ, Электроснабжение, ПТО hujjatlari) va **MS Office** dasturlarini MUKAMMAL BILADI deb hisoblang!
    - Elektroenergetika, Проектировщик, Инженер ПТО, Электрик, Наладчик, Главный энергетик / инженер yo'nalishidagi vakansiyalarga yuqori moslik balli bering.
 3. HAR QANDAY BALLDA HAM COVER LETTER YOZING:
-   - `match_score` necha foiz chiqishidan qat'i nazar (hatto pastroq bo'lsa ham), `cover_letter` maydoniga AYNAN VAKANSIYA TILIDA ('uz', 'ru' yoki 'en') yuborishga tayyor, nomzodning energetika ta'limi, AutoCAD va MS Office ko'nikmalarini ko'rsatuvchi professional Cover Letter yozib bering.
+   - `match_score` necha foiz chiqishidan qat'i nazar, `cover_letter` maydoniga AYNAN VAKANSIYA TILIDA ('uz', 'ru' yoki 'en') yuborishga tayyor professional Cover Letter yozib bering.
 
 --- VAKANSIYA MA'LUMOTLARI ---
 Manba: {source_label}
@@ -930,15 +934,15 @@ def build_main_reply_keyboard() -> ReplyKeyboardMarkup:
     """Telegram bot pastida har doim ko'rinib turuvchi boshqaruv menyusi."""
     markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True, row_width=2)
     btn_now = KeyboardButton(BTN_SEARCH_NOW)
+    btn_clear = KeyboardButton(BTN_CLEAR_SEEN)
     btn_stop = KeyboardButton(BTN_STOP_SEARCH)
     btn_resume = KeyboardButton(BTN_RESUME_SCHEDULE)
-    markup.add(btn_now)
+    markup.add(btn_now, btn_clear)
     markup.add(btn_stop, btn_resume)
     return markup
 
 
 def format_high_match_message(record: dict[str, Any]) -> str:
-    """80%+ moslikdagi vakansiya uchun barcha ma'lumotlar va Cover Letter'ni bitta xabarda shakllantiradi."""
     vac = record["vacancy"]
     ev = record["evaluation"]
     lang = record["resume_lang"]
@@ -972,7 +976,6 @@ def format_high_match_message(record: dict[str, Any]) -> str:
 
 
 def format_medium_match_message(record: dict[str, Any], status_note: str | None = None) -> str:
-    """0%–79% moslikdagi vakansiya uchun manbasi, vakansiya nomi, kalit so'zlari, foizi va tahlilini chiqaradi."""
     vac = record["vacancy"]
     ev = record["evaluation"]
     lang = record["resume_lang"]
@@ -999,7 +1002,6 @@ def format_medium_match_message(record: dict[str, Any], status_note: str | None 
 
 
 def format_cover_letter_view_message(record: dict[str, Any]) -> str:
-    """[ 📄 Kover-xatni ko‘rish ] tugmasi bosilganda to'liq Kover-xat matnini chiqarib beradi."""
     vac = record["vacancy"]
     ev = record["evaluation"]
     lang = record["resume_lang"]
@@ -1025,7 +1027,7 @@ def format_cover_letter_view_message(record: dict[str, Any]) -> str:
 
 
 # =====================================================================
-# 11. YAGONA QIDIRUV VA TAHLIL JARAYONI (FOIZ CHEKLOVISIZ: 0%+)
+# 11. YAGONA QIDIRUV VA TAHLIL JARAYONI (DIAGNOSTIKA BILAN)
 # =====================================================================
 
 def run_single_scan(
@@ -1036,10 +1038,6 @@ def run_single_scan(
     notify_start_and_finish: bool = True,
     trigger_label: str = "Jadval bo'yicha",
 ) -> None:
-    """
-    Kengaytirilgan kalit so'zlar bo'yicha [hh.uz] va [LinkedIn] dan yangi vakansiyalarni topadi
-    va FOIZ CHEKLOVISIZ (0%+) darhol Telegramga yuboradi.
-    """
     if not SCAN_LOCK.acquire(blocking=False):
         try:
             bot.send_message(
@@ -1056,15 +1054,16 @@ def run_single_scan(
     chat_id = config["TELEGRAM_CHAT_ID"]
 
     try:
+        seen_jobs = load_seen_jobs()
         if notify_start_and_finish:
             try:
                 bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"🔍 <b>Kengaytirilgan qidiruv boshlandi...</b> ({html.escape(trigger_label)})\n"
+                        f"🔍 <b>Qidiruv boshlandi...</b> ({html.escape(trigger_label)})\n"
                         f"🕒 Toshkent vaqti: <code>{get_tashkent_now().strftime('%H:%M:%S')}</code>\n"
-                        "• Manbalar: <code>[hh.uz]</code> + <code>[LinkedIn]</code>\n"
-                        "• Filtr: <b>Foiz cheklovisiz (0%+)</b> — kalit so‘zga mos barcha vakansiyalar yuboriladi!"
+                        f"📂 Tarixda ko‘rilganlar (seen_jobs): <code>{len(seen_jobs)}</code> ta\n"
+                        "⏳ Manbalar (<code>[hh.uz]</code> va <code>[LinkedIn]</code>) tekshirilmoqda..."
                     ),
                     parse_mode="HTML",
                     reply_markup=build_main_reply_keyboard(),
@@ -1072,22 +1071,22 @@ def run_single_scan(
             except Exception as exc:
                 print(f"[!] Boshlanish xabarini yuborishda xatolik: {exc}")
 
-        seen_jobs = load_seen_jobs()
         state = load_state()
 
-        hh_vacancies = fetch_new_hh_uz_vacancies(
-            HH_SEARCH_QUERIES,
+        # 1-yo'nalish: hh.uz (alohida sodda kalit so'zlar bilan)
+        hh_vacancies, hh_diag = fetch_new_hh_uz_vacancies(
+            HH_SEARCH_KEYWORDS,
             seen_jobs=seen_jobs,
             max_items=MAX_HH_VACANCIES_PER_SCAN,
         )
 
-        linkedin_vacancies = search_linkedin_jobs(
+        # 2-yo'nalish: LinkedIn (duckduckgo-search)
+        linkedin_vacancies, li_diag = search_linkedin_jobs(
             seen_jobs=seen_jobs,
             max_results=MAX_LINKEDIN_JOBS_PER_SCAN,
         )
 
-        custom_vacancies = load_custom_local_vacancies(BASE_DIR / "custom_vacancies.json", seen_jobs=seen_jobs)
-        all_new_vacancies = custom_vacancies + hh_vacancies + linkedin_vacancies
+        all_new_vacancies = hh_vacancies + linkedin_vacancies
 
         if STOP_SCAN_EVENT.is_set():
             try:
@@ -1101,16 +1100,33 @@ def run_single_scan(
                 pass
             return
 
+        # Diagnostika satri (foydalanuvchi nima bo'layotganini aniq ko'rishi uchun)
+        diag_text = (
+            f"📊 <b>Qidiruv diagnostikasi:</b>\n"
+            f"• <code>[hh.uz]</code>: Jami topildi <b>{hh_diag['unique_found']}</b> ta "
+            f"(Yangisi: <b>{hh_diag['new_count']}</b> ta | Avval ko‘rilgan: <b>{hh_diag['skipped_seen']}</b> ta)\n"
+            f"• <code>[LinkedIn]</code>: Jami topildi <b>{li_diag['unique_found']}</b> ta "
+            f"(Yangisi: <b>{li_diag['new_count']}</b> ta | Avval ko‘rilgan: <b>{li_diag['skipped_seen']}</b> ta)"
+        )
+        if hh_diag["errors"]:
+            diag_text += f"\n⚠️ <code>[hh.uz xatolik]</code>: {html.escape(', '.join(hh_diag['errors']))}"
+        if li_diag["errors"]:
+            diag_text += f"\n⚠️ <code>[LinkedIn/DDGS izoh]</code>: {html.escape(', '.join(li_diag['errors']))}"
+
         if not all_new_vacancies:
-            print("  [*] Hozircha yangi (ko'rilmagan) vakansiyalar topilmadi.")
+            print("  [*] Yangi (ko'rilmagan) vakansiyalar topilmadi.")
             if notify_start_and_finish:
+                hint = ""
+                if hh_diag["skipped_seen"] > 0 or li_diag["skipped_seen"] > 0:
+                    hint = (
+                        "\n\n💡 <i>Izoh: Topilgan vakansiyalar avval ko‘rilganlar (seen_jobs.txt) "
+                        "ro‘yxatida bor ekan. Ularni qaytadan olish uchun pastdagi "
+                        f"<b>[ {BTN_CLEAR_SEEN} ]</b> tugmasini bosing!</i>"
+                    )
                 try:
                     bot.send_message(
                         chat_id=chat_id,
-                        text=(
-                            "✅ <b>Qidiruv yakunlandi.</b>\n"
-                            "Hozircha yangi (avval ko‘rilmagan) vakansiyalar topilmadi."
-                        ),
+                        text=f"✅ <b>Qidiruv yakunlandi.</b>\n\n{diag_text}{hint}",
                         parse_mode="HTML",
                         reply_markup=build_main_reply_keyboard(),
                     )
@@ -1118,18 +1134,21 @@ def run_single_scan(
                     pass
             return
 
-        print(
-            f"\n[3/4] Jami {len(all_new_vacancies)} ta YANGI vakansiya "
-            f"(hh.uz: {len(hh_vacancies)}, LinkedIn: {len(linkedin_vacancies)}) "
-            f"tahlil qilinib Telegramga yuborilmoqda..."
-        )
+        # Agar yangi vakansiyalar topilgan bo'lsa, oldin diagnostika xabarini yuboramiz
+        try:
+            bot.send_message(
+                chat_id=chat_id,
+                text=f"{diag_text}\n\n🚀 <b>{len(all_new_vacancies)} ta yangi vakansiya yuborilmoqda...</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
         sent_high_count = 0
         sent_other_count = 0
 
         for idx, vac in enumerate(all_new_vacancies, start=1):
             if STOP_SCAN_EVENT.is_set():
-                print("\n  [⏹️] Qidiruv foydalanuvchi buyrug'i bilan to'xtatildi.")
                 break
 
             vac_id = str(vac.get("id", f"custom_{idx}")).strip()
@@ -1153,7 +1172,6 @@ def run_single_scan(
                 "updated_at": get_tashkent_now().isoformat(timespec="seconds"),
             }
 
-            # 1-HOLAT: 80% va undan yuqori -> Bitta xabarda barcha ma'lumot + to'liq Kover-xat
             if score >= HIGH_MATCH_THRESHOLD:
                 tg_text = format_high_match_message(record)
                 try:
@@ -1170,14 +1188,12 @@ def run_single_scan(
                     mark_job_as_seen(vac_id)
                     seen_jobs.add(vac_id)
                     sent_high_count += 1
-                    print(f"     [🔥 {score}% O'TA MOS] {source_tag} Telegramga yuborildi.")
                 except Exception as tg_exc:
                     print(f"     [!] Telegramga yuborishda xatolik: {tg_exc}")
 
-                time.sleep(1.2)
+                time.sleep(1.0)
                 continue
 
-            # 2-HOLAT: 0% dan 79% gacha (FOIZ CHEKLOVISIZ!) -> Barchasi Telegramga 2 ta inline tugma bilan yuboriladi
             keyboard = InlineKeyboardMarkup(row_width=2)
             keyboard.add(
                 InlineKeyboardButton(
@@ -1206,20 +1222,18 @@ def run_single_scan(
                 mark_job_as_seen(vac_id)
                 seen_jobs.add(vac_id)
                 sent_other_count += 1
-                print(f"     [📌 {score}% YUBORILDI] {source_tag} Tugmalar bilan Telegramga yuborildi.")
             except Exception as tg_exc:
                 print(f"     [!] Telegramga yuborishda xatolik: {tg_exc}")
 
-            time.sleep(1.2)
+            time.sleep(1.0)
 
         if notify_start_and_finish:
             stopped_note = " (Foydalanuvchi tomonidan to‘xtatildi ⏹️)" if STOP_SCAN_EVENT.is_set() else ""
             summary_msg = (
                 f"✅ <b>Qidiruv yakunlandi!{stopped_note}</b>\n\n"
-                f"• <b>Topilgan va Telegramga yuborilgan yangi e'lonlar:</b> {sent_high_count + sent_other_count} ta "
-                f"(<code>[hh.uz]</code>: {len(hh_vacancies)}, <code>[LinkedIn]</code>: {len(linkedin_vacancies)})\n"
+                f"• <b>Yuborilgan yangi vakansiyalar:</b> {sent_high_count + sent_other_count} ta\n"
                 f"• 🔥 <b>80%+ (O‘ta mos):</b> {sent_high_count} ta\n"
-                f"• 📌 <b>0%–79% (Barcha topilganlar):</b> {sent_other_count} ta"
+                f"• 📌 <b>0%–79% (Topilganlar):</b> {sent_other_count} ta"
             )
             try:
                 bot.send_message(
@@ -1249,9 +1263,7 @@ def setup_daily_schedule(
 ) -> None:
     def scheduled_job(slot_time: str) -> None:
         if not AUTO_SCHEDULE_ENABLED:
-            print(f"\n[⏸️ PAUZA] Soat {slot_time} (UZT) dagi avtomatik qidiruv o'tkazib yuborildi.")
             return
-        print(f"\n[⏰ JADVAL {slot_time} UZT] Avtomatik qidiruv ishga tushirilmoqda...")
         threading.Thread(
             target=run_single_scan,
             args=(bot, config, client, resumes, True, f"Avtomatik jadval ({slot_time} UZT)"),
@@ -1262,7 +1274,6 @@ def setup_daily_schedule(
     for t_str in SCHEDULE_TIMES_UZT:
         try:
             schedule.every().day.at(t_str, "Asia/Tashkent").do(scheduled_job, slot_time=t_str)
-            print(f"  [+] Avto-jadval biriktirildi: har kuni soat {t_str} (Asia/Tashkent / UTC+5)")
         except Exception:
             uz_h, uz_m = map(int, t_str.split(":"))
             now_uz = get_tashkent_now()
@@ -1270,9 +1281,6 @@ def setup_daily_schedule(
             target_local = target_uz.astimezone()
             local_time_str = target_local.strftime("%H:%M")
             schedule.every().day.at(local_time_str).do(scheduled_job, slot_time=t_str)
-            print(
-                f"  [+] Avto-jadval biriktirildi: Toshkent {t_str} -> Server vaqti {local_time_str}"
-            )
 
 
 def schedule_runner_loop() -> None:
@@ -1301,14 +1309,15 @@ def register_bot_handlers(
             seen_count = len(load_seen_jobs())
             sched_status = "Faol ✅ (09:00 va 19:00 UZT)" if AUTO_SCHEDULE_ENABLED else "Vaqtincha to‘xtatilgan ⏸️"
             help_text = (
-                "🤖 <b>Energetika va Muhandislik Vakansiyalari AI Agenti (Foiz cheklovisiz: 0%+)</b>\n\n"
+                "🤖 <b>Energetika va Muhandislik Vakansiyalari AI Agenti</b>\n\n"
                 f"• <b>Toshkent vaqti:</b> <code>{get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
                 f"• <b>Avtomatik jadval:</b> {sched_status}\n"
                 f"• <b>Tarix bazasi (seen_jobs.txt):</b> {seen_count} ta vakansiya ko‘rilgan.\n\n"
                 "👇 <b>Pastdagi tugmalar orqali boshqarishingiz mumkin:</b>\n"
-                f"• <code>{BTN_SEARCH_NOW}</code> — Jadvalni kutmasdan hozirning o‘zida qidirish.\n"
-                f"• <code>{BTN_STOP_SEARCH}</code> — Joriy qidiruvni to‘xtatish va avto-jadvalni pauza qilish.\n"
-                f"• <code>{BTN_RESUME_SCHEDULE}</code> — 09:00 va 19:00 avto-qidiruv jadvalini qayta yoqish."
+                f"• <code>{BTN_SEARCH_NOW}</code> — Hoziroq qidirish.\n"
+                f"• <code>{BTN_CLEAR_SEEN}</code> — Tarixni (seen_jobs.txt) tozalab, barcha e'lonlarni qaytadan olish.\n"
+                f"• <code>{BTN_STOP_SEARCH}</code> — Qidiruvni to‘xtatish.\n"
+                f"• <code>{BTN_RESUME_SCHEDULE}</code> — Jadvalni qayta yoqish."
             )
             bot.send_message(
                 chat_id=message.chat.id,
@@ -1319,7 +1328,7 @@ def register_bot_handlers(
         except Exception as exc:
             print(f"[!] /start javobida xatolik: {exc}")
 
-    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_SEARCH_NOW or (m.text or "").strip() == "/scan")
+    @bot.message_handler(func=lambda m: (m.text or "").strip() in (BTN_SEARCH_NOW, "/scan"))
     def handle_search_now(message: Message) -> None:
         try:
             if str(message.chat.id) != str(config["TELEGRAM_CHAT_ID"]):
@@ -1332,6 +1341,25 @@ def register_bot_handlers(
         except Exception as exc:
             print(f"[!] Hozir qidirish tugmasida xatolik: {exc}")
 
+    @bot.message_handler(func=lambda m: (m.text or "").strip() in (BTN_CLEAR_SEEN, "/clear"))
+    def handle_clear_seen(message: Message) -> None:
+        try:
+            if str(message.chat.id) != str(config["TELEGRAM_CHAT_ID"]):
+                return
+            old_count = len(load_seen_jobs())
+            clear_seen_jobs()
+            bot.send_message(
+                chat_id=message.chat.id,
+                text=(
+                    f"🗑️ <b>Tarix tozalandi!</b> ({old_count} ta yozuv o‘chirildi).\n"
+                    f"Endi <b>[ {BTN_SEARCH_NOW} ]</b> tugmasini bossangiz, barcha mavjud vakansiyalar yangidan yuklanadi."
+                ),
+                parse_mode="HTML",
+                reply_markup=build_main_reply_keyboard(),
+            )
+        except Exception as exc:
+            print(f"[!] Tarixni tozalashda xatolik: {exc}")
+
     @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_STOP_SEARCH)
     def handle_stop_search(message: Message) -> None:
         global AUTO_SCHEDULE_ENABLED
@@ -1340,13 +1368,10 @@ def register_bot_handlers(
                 return
             STOP_SCAN_EVENT.set()
             AUTO_SCHEDULE_ENABLED = False
-            print("\n[⏹️] Foydalanuvchi qidiruvni to'xtatdi va avto-jadvalni pauza qildi.")
             bot.send_message(
                 chat_id=message.chat.id,
                 text=(
-                    "⏹️ <b>Qidiruv to‘xtatildi!</b>\n"
-                    "• Agar qidiruv ketayotgan bo‘lsa, u darhol to‘xtatiladi.\n"
-                    "• Kunlik <b>09:00</b> va <b>19:00</b> (Toshkent vaqti) dagi avtomatik qidiruv vaqtincha pauza qilindi.\n\n"
+                    "⏹️ <b>Qidiruv to‘xtatildi va avto-jadval pauza qilindi!</b>\n"
                     f"Qayta yoqish uchun <code>{BTN_RESUME_SCHEDULE}</code> tugmasini bosing."
                 ),
                 parse_mode="HTML",
@@ -1363,14 +1388,9 @@ def register_bot_handlers(
                 return
             STOP_SCAN_EVENT.clear()
             AUTO_SCHEDULE_ENABLED = True
-            print("\n[▶️] Foydalanuvchi 09:00 va 19:00 (UZT) avto-qidiruv jadvalini qayta faollashtirdi.")
             bot.send_message(
                 chat_id=message.chat.id,
-                text=(
-                    "▶️ <b>Avtomatik rejim qayta faollashtirildi!</b>\n"
-                    "Dastur har kuni O‘zbekiston vaqti (UTC+5) bilan soat <b>09:00</b> va <b>19:00</b> da "
-                    "<code>[hh.uz]</code> hamda <code>[LinkedIn]</code> bo‘yicha yangi vakansiyalarni avtomatik tekshiradi."
-                ),
+                text="▶️ <b>Avtomatik rejim (09:00 va 19:00 UZT) qayta faollashtirildi!</b>",
                 parse_mode="HTML",
                 reply_markup=build_main_reply_keyboard(),
             )
@@ -1416,7 +1436,6 @@ def register_bot_handlers(
                     disable_web_page_preview=True,
                 )
                 bot.answer_callback_query(call.id, "Kover-xat ochildi 📄")
-                print(f"[TELEGRAM] Vakansiya #{vac_id} uchun Kover-xat ko'rsatildi 📄")
                 return
 
             if action == "skip":
@@ -1438,7 +1457,6 @@ def register_bot_handlers(
                     disable_web_page_preview=True,
                 )
                 bot.answer_callback_query(call.id, "O'tkazib yuborildi ❌")
-                print(f"[TELEGRAM] Vakansiya #{vac_id} 'Kerak emas' deb belgilandi ❌")
         except Exception as exc:
             print(f"[!] Tugmani qayta ishlashda xatolik: {exc}")
 
@@ -1449,7 +1467,7 @@ def register_bot_handlers(
 
 def main() -> None:
     print("=" * 88)
-    print(" O'ZBEKISTON ENERGETIKA VA MUHANDISLIK VAKANSIYALARI AI AGENTI (FOIZ CHEKLOVISIZ: 0%+)")
+    print(" O'ZBEKISTON ENERGETIKA VA MUHANDISLIK VAKANSIYALARI AI AGENTI (TUZATILGAN QIDIRUV)")
     print(f" Ishchi papka   : {BASE_DIR}")
     print(f" Tarix fayli    : {SEEN_JOBS_FILE}")
     print(f" Toshkent vaqti : {get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S (UTC+5)')}")
@@ -1476,11 +1494,11 @@ def main() -> None:
         bot.send_message(
             chat_id=config["TELEGRAM_CHAT_ID"],
             text=(
-                "✅ <b>AI Agent yangilandi (Foiz cheklovisiz: 0%+ rejim)!</b>\n\n"
+                "✅ <b>AI Agent yangilandi (Diagnostika + Alohida Kalit So‘zlar)!</b>\n\n"
                 f"• <b>Toshkent vaqti:</b> <code>{get_tashkent_now().strftime('%H:%M:%S (UTC+5)')}</code>\n"
-                "• <b>Qidiruv yo‘nalishlari:</b> Elektroenergetika, Loyihalash (ЭОМ, Электроснабжение, Проектировщик) va Qurilish/ПТО/Главный инженер\n"
-                "• <b>Filtr:</b> 0%+ (kalit so‘zga mos barcha vakansiyalar darhol Telegramga yuboriladi)\n"
-                "• Hoziroq tekshirish uchun pastdagi <b>[ 🔍 Hozir qidirish ]</b> tugmasini bosing."
+                f"• <b>Kalit so‘zlar soni:</b> {len(HH_SEARCH_KEYWORDS)} ta alohida so‘rov\n"
+                f"• <b>Tarixda (seen_jobs.txt):</b> {len(seen_initial)} ta vakansiya\n"
+                "• Hoziroq tekshirish uchun <b>[ 🔍 Hozir qidirish ]</b> tugmasini bosing (agar avvalgi vakansiyalarni qaytadan ko‘rmoqchi bo‘lsangiz, avval <b>[ 🗑️ Tarixni tozalash ]</b> ni bosing)."
             ),
             parse_mode="HTML",
             reply_markup=build_main_reply_keyboard(),
@@ -1488,13 +1506,10 @@ def main() -> None:
     except Exception as exc:
         print(f"  [!] Boshlang'ich Telegram xabarini yuborishda xatolik: {exc}")
 
-    print("\n[4/4] Telegram Bot, Health Check serveri va kunlik jadval (09:00 / 19:00 UZT) faol!")
-
     while True:
         try:
             bot.infinity_polling(timeout=30, long_polling_timeout=25)
         except KeyboardInterrupt:
-            print("\n[!] Dastur foydalanuvchi tomonidan to'xtatildi.")
             break
         except Exception as poll_exc:
             print(f"\n[!] Telegram aloqasida uzilish ({poll_exc}). 10 soniyadan so'ng qayta ulanadi...")
