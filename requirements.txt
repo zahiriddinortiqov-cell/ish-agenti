@@ -1,0 +1,10 @@
+google-genai
+pypdf
+requests
+pydantic
+pyTelegramBotAPI
+python-dotenv
+duckduckgo-search
+schedule
+pytz
+tzdata
