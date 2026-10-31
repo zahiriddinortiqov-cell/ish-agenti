@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Ko'p Foydalanuvchili (Multi-User & Non-Blocking) AI Ish Qidirish Telegram Boti (Render.com 24/7 Ready)
+Ko'p Foydalanuvchili (Multi-User & Non-Blocking) AI Ish Qidirish Telegram Boti + Admin Paneli
+(Render.com 24/7 Ready)
 
-Asosiy imkoniyatlar:
-1. Multi-user & Non-blocking (Parallel ishlash):
-   - Botga istalgan foydalanuvchi kirib /start bosishi va o'z shaxsiy rezyumesi bilan foydalanishi mumkin.
-   - Bir vaqtda ko'p odam yozganda qotib qolmaydi (ko'p oqimli `threaded=True` + har bir foydalanuvchi uchun alohida oqim).
-   - Har bir foydalanuvchining rezyumesi, kalit so'zlari va qidiruv tarixi `users/<user_id>/` papkasida
-     alohida saqlanadi va bir-biriga mutlaqo aralashib ketmaydi.
-2. Rezyumeni faqat PDF formatida qabul qilish:
-   - Foydalanuvchi PDF yuborsa, uni o'qib oladi; boshqa format yuborsa, faqat PDF yuborishni so'raydi.
-3. Rezyumedan avtomatik kalit so'z aniqlash va qo'shimcha kalit so'z qo'shish:
-   - PDF rezyume yuklangach, Gemini AI uni tahlil qilib, shu mutaxassisga mos ish qidirish kalit so'zlarini chiqaradi.
-   - Foydalanuvchidan: "Sizning rezyumengiz asosida quyidagi kalit so'zlar aniqlandi. Shular bo'yicha qidiraylikmi
-     yoki yana boshqa kalit so'z qo'shasizmi?" deb so'raydi.
-   - Foydalanuvchi tasdiqlashi yoki o'zidan yangi kalit so'zlar qo'shib qidiruvni boshlashi mumkin.
-4. LinkedIn (Guest API) + hh.uz (403 Fix), 30 kunlik filtr, 5 tadan Batch tahlil, 429 Quota himoyasi
-   va interaktiv [ ✍️ Kover-xat yozish ] tugmasi to'liq saqlangan.
+Yangi qo'shilgan Admin va Limit tizimi:
+1. ADMIN_ID = int(os.getenv('ADMIN_ID', '608221268')) orqali adminni aniqlash.
+2. /admin buyrug'i:
+   - Faqat ADMIN_ID egasi uchun maxsus Admin Boshqaruv Menyusini ochadi.
+   - Begona foydalanuvchi yozsa: "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q" deb qaytaradi.
+3. Admin panel imkoniyatlari:
+   - 📊 Statistika: Jami ro'yxatdan o'tgan foydalanuvchilar, rezyume yuklaganlar va bugungi faol qidiruvlar soni.
+   - 🔔 Yangi foydalanuvchi bildirishnomasi: PDF rezyume yuklanganda adminga "Yangi foydalanuvchi qo'shildi: [Ism/ID]" boradi.
+   - 📢 Xabar yuborish (Broadcast): Barcha foydalanuvchilarga umumiy e'lon yuborish.
+   - 👤 Foydalanuvchini boshqarish: ID orqali bloklash (Ban / Unban) va qo'shimcha qidiruv limiti (+limit) berish.
+4. Kunlik qidiruv limiti:
+   - Oddiy foydalanuvchilar uchun kuniga maksimal 3 marta qidiruv (DAILY_SEARCH_LIMIT = 3).
+   - Admin (ADMIN_ID = 608221268) uchun qidiruv limiti cheksiz.
 """
 
 from __future__ import annotations
@@ -64,7 +63,7 @@ from google.genai import types
 
 
 # =====================================================================
-# 1. SOZLAMALAR, VAQT MINTAQASI (UTC+5) VA HEADERS
+# 1. SOZLAMALAR, ADMIN_ID, KUNLIK LIMIT VA VAQT MINTAQASI (UTC+5)
 # =====================================================================
 
 try:
@@ -77,6 +76,22 @@ def get_tashkent_now() -> datetime:
     """Server qaysi davlatda (UTC) bo'lishidan qat'i nazar, aniq Toshkent vaqtini (UTC+5) qaytaradi."""
     return datetime.now(TASHKENT_TZ)
 
+
+def get_today_str() -> str:
+    return get_tashkent_now().strftime("%Y-%m-%d")
+
+
+DEFAULT_PROJECT_DIR = Path(r"D:\IshAgenti")
+BASE_DIR = DEFAULT_PROJECT_DIR if DEFAULT_PROJECT_DIR.exists() else Path(__file__).resolve().parent
+USERS_DIR = BASE_DIR / "users"
+
+load_dotenv(dotenv_path=BASE_DIR / ".env")
+
+# Admin Telegram ID (Render Environment orqali olinadi)
+ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0").strip() or "0")
+
+# Oddiy foydalanuvchilar uchun kunlik qidiruv limiti (Admin uchun cheksiz)
+DAILY_SEARCH_LIMIT: int = 3
 
 # LinkedIn uchun haqiqiy Chrome brauzeri sarlavhalari (TEGILMADI)
 BROWSER_HEADERS: dict[str, str] = {
@@ -117,10 +132,6 @@ HH_HEADER_PROFILES: list[dict[str, str]] = [
     },
 ]
 
-DEFAULT_PROJECT_DIR = Path(r"D:\IshAgenti")
-BASE_DIR = DEFAULT_PROJECT_DIR if DEFAULT_PROJECT_DIR.exists() else Path(__file__).resolve().parent
-USERS_DIR = BASE_DIR / "users"
-
 GEMINI_MODEL = "gemini-3.0-flash"
 GEMINI_MODEL_CANDIDATES: list[str] = [
     "gemini-3.0-flash",
@@ -142,7 +153,6 @@ MAX_LINKEDIN_JOBS_PER_SCAN = 15
 HH_API_BASE_URL = "https://api.hh.ru/vacancies"
 UZBEKISTAN_AREA_ID = "97"
 
-# Standart zaxira kalit so'zlar (agar rezyumedan kalit so'z chiqmasa yoki AI limiti tugagan bo'lsa)
 DEFAULT_FALLBACK_KEYWORDS: list[str] = [
     "Энергетик",
     "Инженер-энергетик",
@@ -171,11 +181,23 @@ BTN_RESUME_SCHEDULE = "▶️ Qayta faollashtirish"
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 PHONE_REGEX = re.compile(r"(?:\+?998[\s\-()]*)?(?:\d{2}[\s\-()]*)\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 
-# Har bir foydalanuvchi (user_id) uchun alohida Lock va Stop Event obyektlari
 USER_LOCKS_GUARD = threading.Lock()
 USER_DATA_LOCKS: dict[str, threading.Lock] = {}
 USER_SCAN_LOCKS: dict[str, threading.Lock] = {}
 USER_STOP_EVENTS: dict[str, threading.Event] = {}
+
+# Admin interaktiv rejimi (broadcast, ban, add_limit uchun kutilayotgan amal)
+ADMIN_PENDING_ACTION: dict[int, str | None] = {}
+
+
+def is_admin(user_id: int | str | None) -> bool:
+    """Foydalanuvchi ID raqami ADMIN_ID ga tengligini tekshiradi."""
+    if user_id is None:
+        return False
+    try:
+        return int(user_id) == ADMIN_ID
+    except Exception:
+        return False
 
 
 def get_user_data_lock(user_id: str | int) -> threading.Lock:
@@ -207,7 +229,6 @@ def get_user_stop_event(user_id: str | int) -> threading.Event:
 # =====================================================================
 
 def auto_setup() -> None:
-    """Render.com, Koyeb va GitHub uchun zarur fayllarni UTF-8 formatda yaratadi."""
     print("\n[0/4] Render.com / Koyeb va GitHub uchun loyiha fayllari tekshirilmoqda (auto_setup)...", flush=True)
     USERS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -273,7 +294,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         payload = {
             "status": "ok",
-            "service": "MultiUserJobAgent",
+            "service": "MultiUserJobAgentWithAdmin",
             "model": ACTIVE_GEMINI_MODEL or GEMINI_MODEL,
             "tashkent_time": get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S UTC+5"),
         }
@@ -357,7 +378,7 @@ class BatchVacancyEvaluationList(BaseModel):
 
 
 # =====================================================================
-# 5. HAR BIR FOYDALANUVCHI (USER_ID) MA'LUMOTLARINI ALOHIDA SAQLASH
+# 5. FOYDALANUVCHI PROFILI, KUNLIK LIMIT VA STATISTIKA FUNKSIYALARI
 # =====================================================================
 
 def get_user_dir(user_id: str | int) -> Path:
@@ -367,32 +388,41 @@ def get_user_dir(user_id: str | int) -> Path:
 
 
 def load_user_profile(user_id: str | int) -> dict[str, Any]:
-    """Har bir foydalanuvchining shaxsiy profili, rezyume matni va kalit so'zlarini o'qiydi."""
     uid = str(user_id).strip()
     user_dir = get_user_dir(uid)
     profile_path = user_dir / "profile.json"
     lock = get_user_data_lock(uid)
 
+    default_profile: dict[str, Any] = {
+        "user_id": uid,
+        "full_name": "",
+        "username": "",
+        "is_banned": False,
+        "has_resume": False,
+        "resume_filename": "",
+        "resume_lang": "ru",
+        "resume_text": "",
+        "profession": "",
+        "keywords": [],
+        "awaiting_extra_keywords": False,
+        "auto_schedule_enabled": True,
+        "daily_search_date": get_today_str(),
+        "daily_search_count": 0,
+        "bonus_searches": 0,
+        "total_searches": 0,
+        "created_at": get_tashkent_now().isoformat(timespec="seconds"),
+        "updated_at": get_tashkent_now().isoformat(timespec="seconds"),
+    }
+
     with lock:
         if profile_path.exists():
             try:
-                return json.loads(profile_path.read_text(encoding="utf-8"))
+                loaded = json.loads(profile_path.read_text(encoding="utf-8"))
+                for k, v in default_profile.items():
+                    loaded.setdefault(k, v)
+                return loaded
             except Exception:
                 pass
-
-        default_profile: dict[str, Any] = {
-            "user_id": uid,
-            "has_resume": False,
-            "resume_filename": "",
-            "resume_lang": "ru",
-            "resume_text": "",
-            "profession": "",
-            "keywords": [],
-            "awaiting_extra_keywords": False,
-            "auto_schedule_enabled": True,
-            "created_at": get_tashkent_now().isoformat(timespec="seconds"),
-            "updated_at": get_tashkent_now().isoformat(timespec="seconds"),
-        }
         return default_profile
 
 
@@ -413,19 +443,109 @@ def save_user_profile(user_id: str | int, profile: dict[str, Any]) -> None:
             print(f"[OGOHLANTIRISH] User {uid} profilini saqlashda xatolik: {exc}", flush=True)
 
 
-def list_all_active_user_ids() -> list[str]:
-    """Avtomatik jadval (09:00 va 19:00) uchun rezyume yuklagan barcha foydalanuvchilar ro'yxatini qaytaradi."""
+def update_user_identity(message: Message) -> dict[str, Any]:
+    """Foydalanuvchi ismi va username ma'lumotlarini profilga yozib qo'yadi."""
+    uid = str(message.chat.id)
+    profile = load_user_profile(uid)
+    if message.from_user:
+        first = message.from_user.first_name or ""
+        last = message.from_user.last_name or ""
+        full_name = f"{first} {last}".strip()
+        if full_name:
+            profile["full_name"] = full_name
+        if message.from_user.username:
+            profile["username"] = message.from_user.username
+    save_user_profile(uid, profile)
+    return profile
+
+
+def check_and_consume_search_quota(user_id: str | int) -> tuple[bool, str]:
+    """
+    Kunlik qidiruv limitini tekshiradi va 1 ta urinishni hisobdan chiqaradi:
+      - Admin (ADMIN_ID) uchun limit cheksiz.
+      - Oddiy foydalanuvchi uchun kuniga DAILY_SEARCH_LIMIT (3 marta) + admin bergan bonus_searches.
+    """
+    uid = str(user_id).strip()
+    today = get_today_str()
+    profile = load_user_profile(uid)
+
+    if profile.get("daily_search_date") != today:
+        profile["daily_search_date"] = today
+        profile["daily_search_count"] = 0
+
+    if is_admin(uid):
+        profile["daily_search_count"] = int(profile.get("daily_search_count", 0)) + 1
+        profile["total_searches"] = int(profile.get("total_searches", 0)) + 1
+        save_user_profile(uid, profile)
+        return True, "Cheksiz (Admin 👑)"
+
+    used_today = int(profile.get("daily_search_count", 0))
+    bonus = int(profile.get("bonus_searches", 0))
+
+    if used_today < DAILY_SEARCH_LIMIT:
+        profile["daily_search_count"] = used_today + 1
+        profile["total_searches"] = int(profile.get("total_searches", 0)) + 1
+        save_user_profile(uid, profile)
+        remaining = (DAILY_SEARCH_LIMIT - (used_today + 1)) + bonus
+        return True, f"Bugungi limitdan qoldi: {remaining} ta ({used_today + 1}/{DAILY_SEARCH_LIMIT})"
+
+    if bonus > 0:
+        profile["bonus_searches"] = bonus - 1
+        profile["daily_search_count"] = used_today + 1
+        profile["total_searches"] = int(profile.get("total_searches", 0)) + 1
+        save_user_profile(uid, profile)
+        return True, f"Bonus limit ishlatildi (Qolgan bonus: {bonus - 1} ta)"
+
+    return False, (
+        f"⚠️ <b>Kunlik qidiruv limitingiz tugadi ({DAILY_SEARCH_LIMIT}/{DAILY_SEARCH_LIMIT})!</b>\n\n"
+        "Gemini API bepul limitini tejash maqsadida oddiy foydalanuvchilarga kuniga "
+        f"maksimal <b>{DAILY_SEARCH_LIMIT} marta</b> qidiruv beriladi.\n"
+        "🕒 Ertaga limit avtomatik yangilanadi yoki qo‘shimcha limit olish uchun adminga murojaat qiling."
+    )
+
+
+def list_all_user_ids() -> list[str]:
     if not USERS_DIR.exists():
         return []
     uids: list[str] = []
     for sub in USERS_DIR.iterdir():
         if sub.is_dir() and (sub / "profile.json").exists():
             uids.append(sub.name)
-    return uids
+    return sorted(uids)
+
+
+def collect_bot_statistics() -> dict[str, Any]:
+    """Admin panel uchun jami foydalanuvchilar va bugungi faol qidiruvlar statistikasini yig'adi."""
+    uids = list_all_user_ids()
+    today = get_today_str()
+    total_users = len(uids)
+    with_resume = 0
+    banned_users = 0
+    today_searches = 0
+    active_users_today = 0
+
+    for uid in uids:
+        prof = load_user_profile(uid)
+        if prof.get("has_resume"):
+            with_resume += 1
+        if prof.get("is_banned"):
+            banned_users += 1
+        if prof.get("daily_search_date") == today:
+            cnt = int(prof.get("daily_search_count", 0))
+            today_searches += cnt
+            if cnt > 0:
+                active_users_today += 1
+
+    return {
+        "total_users": total_users,
+        "with_resume": with_resume,
+        "banned_users": banned_users,
+        "today_searches": today_searches,
+        "active_users_today": active_users_today,
+    }
 
 
 def load_user_seen_jobs(user_id: str | int) -> set[str]:
-    """Foydalanuvchining shaxsiy seen_jobs.txt faylini o'qiydi."""
     uid = str(user_id).strip()
     seen_file = get_user_dir(uid) / "seen_jobs.txt"
     lock = get_user_data_lock(uid)
@@ -503,7 +623,6 @@ def get_config() -> dict[str, str]:
 
     gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     tg_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    admin_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
     missing: list[str] = []
     if not gemini_key:
@@ -518,12 +637,10 @@ def get_config() -> dict[str, str]:
     return {
         "GEMINI_API_KEY": gemini_key,
         "TELEGRAM_BOT_TOKEN": tg_token,
-        "ADMIN_CHAT_ID": admin_chat_id,
     }
 
 
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
-    """Telegramdan yuklab olingan PDF fayl baytlaridan matnni ajratib oladi."""
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
         pages_text: list[str] = []
@@ -688,7 +805,6 @@ def _call_gemini_with_fallback(
 
 
 def _extract_keywords_fallback_from_text(resume_text: str) -> tuple[list[str], str, Literal["uz", "ru", "en"]]:
-    """Agar Gemini API limiti tugagan paytda yangi foydalanuvchi rezyume yuklasa, matndan kalit so'zlarni ajratadi."""
     lang = detect_language_fast(resume_text)
     sample = resume_text.lower()
 
@@ -733,16 +849,12 @@ def extract_keywords_from_resume_with_gemini(
     client: genai.Client,
     resume_text: str,
 ) -> tuple[list[str], str, Literal["uz", "ru", "en"]]:
-    """
-    Yangi foydalanuvchi yuborgan PDF rezyume matnini Gemini orqali o'qib,
-    unga mos ish qidirish kalit so'zlarini (keywords) avtomatik taxmin qiladi.
-    """
     prompt = f"""
 Siz professional HR va karyera maslahatchisisiz.
 Quyidagi NOMZOD REZYUMESI matnini diqqat bilan o'qib chiqing va ushbu inson O'zbekistonda (hh.uz va LinkedIn orqali) ish topishi uchun ENG MOS keladigan 8 tadan 12 tagacha qidiruv kalit so'zlarini (`suggested_keywords`) aniqlab bering.
 
 QOIDALAR:
-1. Kalit so'zlar aniq lavozim nomlari va asosiy ixtisoslik so'zlari bo'lsin (masalan: "Инженер-энергетик", "Инженер-проектировщик", "Инженер ПТО", "Electrical Engineer", "Энергетик", "ЭОМ", "Project Engineer" yoki rezyumedagi haqiqiy kasbiga mos rus/ingliz/o'zbek tilidagi lavozimlar).
+1. Kalit so'zlar aniq lavozim nomlari va asosiy ixtisoslik so'zlari bo'lsin (rus, ingliz va o'zbek tillarida).
 2. Har bir kalit so'z qisqa (1–3 so'zdan iborat), qidiruv tizimi (`hh.uz` va `LinkedIn`) oson topadigan formatda bo'lsin.
 
 --- NOMZOD REZYUMESI MATNI ---
@@ -1052,7 +1164,6 @@ def search_linkedin_jobs(
     skipped_seen = 0
     li_errors: list[str] = []
 
-    # Foydalanuvchining kalit so'zlaridan dastlabki 6 tasini LinkedIn'dan qidiramiz
     for kw in keywords[:6]:
         if stop_event.is_set():
             break
@@ -1161,10 +1272,6 @@ def analyze_vacancies_batch_with_gemini(
     batch: list[dict[str, Any]],
     resume_text: str,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
-    """
-    5 ta vakansiyani foydalanuvchining shaxsiy PDF rezyumesi matni bilan solishtiradi.
-    Agar Gemini 429 Quota Exceeded bersa, ai_failed = True qaytaradi va bot to'xtab qolmaydi.
-    """
     if not batch:
         return {}, False
 
@@ -1292,7 +1399,7 @@ Nomzod rezyumesi:
 
 
 # =====================================================================
-# 10. TELEGRAM KLAVIATURALARI VA XABAR FORMATLARI
+# 10. TELEGRAM KLAVIATURALARI VA ADMIN PANEL MENYUSI
 # =====================================================================
 
 def build_main_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -1303,8 +1410,24 @@ def build_main_reply_keyboard() -> ReplyKeyboardMarkup:
     return markup
 
 
+def build_admin_inline_keyboard() -> InlineKeyboardMarkup:
+    """Admin Boshqaruv Menyusi tugmalari (/admin bosilganda chiqadi)."""
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📊 Statistika", callback_data="admin|stats"),
+        InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="admin|users"),
+    )
+    kb.add(
+        InlineKeyboardButton("📢 Xabar yuborish (Broadcast)", callback_data="admin|broadcast"),
+    )
+    kb.add(
+        InlineKeyboardButton("➕ Limit berish (+3)", callback_data="admin|addlimit"),
+        InlineKeyboardButton("🚫 Bloklash / Ochish (Ban)", callback_data="admin|ban"),
+    )
+    return kb
+
+
 def build_keyword_confirm_inline_keyboard() -> InlineKeyboardMarkup:
-    """Rezyumedan kalit so'zlar aniqlanganda chiqadigan tasdiqlash yoki qo'shish tugmalari."""
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton(
@@ -1411,7 +1534,7 @@ def format_short_vacancy_message(
 
 
 # =====================================================================
-# 11. HAR BIR FOYDALANUVCHI UCHUN PARALLEL QIDIRUV FUNKSIYASI
+# 11. HAR BIR FOYDALANUVCHI UCHUN PARALLEL QIDIRUV FUNKSIYASI (LIMIT BILAN)
 # =====================================================================
 
 def run_user_scan(
@@ -1421,11 +1544,37 @@ def run_user_scan(
     notify_start_and_finish: bool = True,
     trigger_label: str = "Qo‘lda qidiruv",
 ) -> None:
-    """
-    Muayyan foydalanuvchi (`user_id`) uchun uning shaxsiy kalit so'zlari va rezyumesi
-    asosida parallel ravishda (boshqa foydalanuvchilarni bloklamasdan) vakansiya qidiradi.
-    """
     uid = str(user_id).strip()
+    profile = load_user_profile(uid)
+
+    # 1. Bloklanganlikni tekshirish
+    if profile.get("is_banned") and not is_admin(uid):
+        try:
+            bot.send_message(
+                chat_id=uid,
+                text="🚫 <b>Kechirasiz, sizning profilingiz admin tomonidan bloklangan.</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+
+    # 2. Rezyume yuklanganligini tekshirish
+    if not profile.get("has_resume") or not profile.get("resume_text"):
+        try:
+            bot.send_message(
+                chat_id=uid,
+                text=(
+                    "📄 <b>Iltimos, avval rezyumengizni PDF formatida yuboring!</b>\n\n"
+                    "Rezyumengizni shu chatga <code>.pdf</code> fayl sifatida tashlang."
+                ),
+                parse_mode="HTML",
+                reply_markup=build_main_reply_keyboard(),
+            )
+        except Exception:
+            pass
+        return
+
     scan_lock = get_user_scan_lock(uid)
     stop_event = get_user_stop_event(uid)
 
@@ -1444,16 +1593,13 @@ def run_user_scan(
     stop_event.clear()
 
     try:
-        profile = load_user_profile(uid)
-        if not profile.get("has_resume") or not profile.get("resume_text"):
+        # 3. Kunlik qidiruv limitini (3 marta / Admin uchun cheksiz) tekshirish
+        allowed, quota_info = check_and_consume_search_quota(uid)
+        if not allowed:
             try:
                 bot.send_message(
                     chat_id=uid,
-                    text=(
-                        "📄 <b>Iltimos, avval rezyumengizni PDF formatida yuboring!</b>\n\n"
-                        "Rezyumengizni shu chatga <code>.pdf</code> fayl sifatida tashlang — "
-                        "sun'iy intellekt uni o‘qib chiqib, sizga mos ish qidirish kalit so‘zlarini aniqlab beradi."
-                    ),
+                    text=quota_info,
                     parse_mode="HTML",
                     reply_markup=build_main_reply_keyboard(),
                 )
@@ -1461,6 +1607,7 @@ def run_user_scan(
                 pass
             return
 
+        profile = load_user_profile(uid)
         user_keywords: list[str] = profile.get("keywords") or list(DEFAULT_FALLBACK_KEYWORDS)
         resume_text: str = profile.get("resume_text") or ""
         seen_jobs = load_user_seen_jobs(uid)
@@ -1473,8 +1620,9 @@ def run_user_scan(
                     chat_id=uid,
                     text=(
                         f"🔍 <b>Qidiruv boshlandi...</b> ({html.escape(trigger_label)})\n"
+                        f"📊 <b>Limit holati:</b> {html.escape(quota_info)}\n"
                         f"🔑 <b>Kalit so‘zlaringiz:</b> <code>{html.escape(kws_preview)}</code>\n"
-                        "⏳ <code>[hh.uz]</code> va <code>[LinkedIn]</code> dan oxirgi 30 kunlik yangi vakansiyalar olinmoqda..."
+                        "⏳ <code>[hh.uz]</code> va <code>[LinkedIn]</code> tekshirilmoqda..."
                     ),
                     parse_mode="HTML",
                     reply_markup=build_main_reply_keyboard(),
@@ -1641,10 +1789,10 @@ def setup_daily_schedule(
     client: genai.Client,
 ) -> None:
     def scheduled_job_all_users(slot_time: str) -> None:
-        user_ids = list_all_active_user_ids()
+        user_ids = list_all_user_ids()
         for uid in user_ids:
             prof = load_user_profile(uid)
-            if not prof.get("has_resume") or not prof.get("auto_schedule_enabled", True):
+            if prof.get("is_banned") or not prof.get("has_resume") or not prof.get("auto_schedule_enabled", True):
                 continue
             threading.Thread(
                 target=run_user_scan,
@@ -1675,7 +1823,75 @@ def schedule_runner_loop() -> None:
 
 
 # =====================================================================
-# 13. TELEGRAM BOT MULTI-USER HANDLERLARI (NON-BLOCKING)
+# 13. ADMIN PANEL FUNKSIYALARI (BROADCAST, BAN, ADD LIMIT, YANGI USER XABARI)
+# =====================================================================
+
+def notify_admin_new_user_pdf(
+    bot: telebot.TeleBot,
+    user_id: str,
+    full_name: str,
+    username: str,
+    profession: str,
+    file_name: str,
+) -> None:
+    """Yangi odam PDF rezyume yuklaganda adminga avtomatik bildirishnoma yuboradi."""
+    user_label = html.escape(full_name or "Noma'lum")
+    uname_part = f" (@{html.escape(username)})" if username else ""
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("➕ +3 Limit berish", callback_data=f"adm_quick_lim|{user_id}"),
+        InlineKeyboardButton("🚫 Bloklash (Ban)", callback_data=f"adm_quick_ban|{user_id}"),
+    )
+    msg_text = (
+        f"🆕 <b>Yangi foydalanuvchi qo‘shildi:</b> {user_label}{uname_part} [ID: <code>{user_id}</code>]\n"
+        f"📄 <b>Rezyume:</b> <code>{html.escape(file_name)}</code>\n"
+        f"👨‍💼 <b>Yo‘nalish:</b> {html.escape(profession)}"
+    )
+    try:
+        bot.send_message(
+            chat_id=ADMIN_ID,
+            text=msg_text,
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+    except Exception as exc:
+        print(f"[!] Adminga yangi foydalanuvchi bildirishnomasini yuborishda xatolik: {exc}", flush=True)
+
+
+def broadcast_message_to_all_users(bot: telebot.TeleBot, broadcast_text: str) -> None:
+    """Admin yuborgan xabarni barcha ro'yxatdan o'tgan foydalanuvchilarga yetkazadi."""
+    uids = list_all_user_ids()
+    sent_ok = 0
+    failed = 0
+    for uid in uids:
+        try:
+            bot.send_message(
+                chat_id=uid,
+                text=f"📢 <b>Admin e'loni:</b>\n\n{html.escape(broadcast_text)}",
+                parse_mode="HTML",
+            )
+            sent_ok += 1
+        except Exception:
+            failed += 1
+        time.sleep(0.1)
+
+    try:
+        bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"✅ <b>Broadcast yakunlandi!</b>\n"
+                f"• Yetkazildi: <b>{sent_ok}</b> ta foydalanuvchiga\n"
+                f"• Yetib bormadi: <b>{failed}</b> ta"
+            ),
+            parse_mode="HTML",
+            reply_markup=build_admin_inline_keyboard(),
+        )
+    except Exception:
+        pass
+
+
+# =====================================================================
+# 14. TELEGRAM BOT HANDLERLARI (ADMIN + MULTI-USER)
 # =====================================================================
 
 def _process_uploaded_pdf_in_thread(
@@ -1683,11 +1899,13 @@ def _process_uploaded_pdf_in_thread(
     client: genai.Client,
     message: Message,
 ) -> None:
-    """
-    Yangi foydalanuvchi yuborgan PDF rezyumeni alohida oqimda (boshqa odamlarni kutdirmasdan)
-    yuklab oladi, matnini ajratadi va Gemini orqali kalit so'zlarni taxmin qilib so'raydi.
-    """
     uid = str(message.chat.id)
+    profile = update_user_identity(message)
+
+    if profile.get("is_banned") and not is_admin(uid):
+        bot.reply_to(message, "🚫 Kechirasiz, sizning profilingiz admin tomonidan bloklangan.")
+        return
+
     doc = message.document
     if not doc:
         return
@@ -1715,7 +1933,6 @@ def _process_uploaded_pdf_in_thread(
         file_info = bot.get_file(doc.file_id)
         pdf_bytes = bot.download_file(file_info.file_path)
 
-        # Foydalanuvchining shaxsiy papkasiga PDF faylni saqlaymiz
         user_pdf_path = get_user_dir(uid) / "resume.pdf"
         user_pdf_path.write_bytes(pdf_bytes)
 
@@ -1743,6 +1960,17 @@ def _process_uploaded_pdf_in_thread(
         profile["keywords"] = keywords
         profile["awaiting_extra_keywords"] = True
         save_user_profile(uid, profile)
+
+        # Adminga yangi foydalanuvchi rezyume yuklagani haqida avtomatik bildirishnoma yuborish
+        if not is_admin(uid):
+            notify_admin_new_user_pdf(
+                bot=bot,
+                user_id=uid,
+                full_name=profile.get("full_name", ""),
+                username=profile.get("username", ""),
+                profession=profession,
+                file_name=file_name,
+            )
 
         kws_formatted = "\n".join(f"• <code>{html.escape(k)}</code>" for k in keywords)
         reply_text = (
@@ -1781,19 +2009,129 @@ def register_bot_handlers(
     client: genai.Client,
 ) -> None:
 
+    # 1. /admin BUYRUG'I VA HUQUQNI TEKSHIRISH
+    @bot.message_handler(commands=["admin"])
+    def handle_admin_command(message: Message) -> None:
+        try:
+            sender_id = message.from_user.id if message.from_user else message.chat.id
+            if sender_id != ADMIN_ID:
+                bot.reply_to(
+                    message,
+                    "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q",
+                )
+                return
+
+            ADMIN_PENDING_ACTION.pop(ADMIN_ID, None)
+            stats = collect_bot_statistics()
+            admin_text = (
+                "👑 <b>Admin Boshqaruv Menyusi</b>\n\n"
+                f"• <b>Admin ID:</b> <code>{ADMIN_ID}</code> (Cheksiz qidiruv)\n"
+                f"• <b>Jami ro‘yxatdan o‘tganlar:</b> <b>{stats['total_users']}</b> ta\n"
+                f"• <b>PDF rezyume yuklaganlar:</b> <b>{stats['with_resume']}</b> ta\n"
+                f"• <b>Bugungi faol qidiruvlar:</b> <b>{stats['today_searches']}</b> ta ({stats['active_users_today']} ta faol user)\n"
+                f"• <b>Bloklanganlar (Ban):</b> <b>{stats['banned_users']}</b> ta\n\n"
+                "💡 <b>Tezkor buyruqlar:</b>\n"
+                "• <code>/broadcast Matn</code> — Barchaga xabar yuborish\n"
+                "• <code>/ban USER_ID</code> — Foydalanuvchini bloklash\n"
+                "• <code>/unban USER_ID</code> — Blokdan chiqarish\n"
+                "• <code>/addlimit USER_ID 5</code> — Qo‘shimcha qidiruv limiti berish"
+            )
+            bot.send_message(
+                chat_id=message.chat.id,
+                text=admin_text,
+                parse_mode="HTML",
+                reply_markup=build_admin_inline_keyboard(),
+            )
+        except Exception as exc:
+            print(f"[!] /admin xatoligi: {exc}", flush=True)
+
+    @bot.message_handler(commands=["ban", "unban", "addlimit", "broadcast"])
+    def handle_admin_quick_commands(message: Message) -> None:
+        try:
+            sender_id = message.from_user.id if message.from_user else message.chat.id
+            if sender_id != ADMIN_ID:
+                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
+                return
+
+            parts = (message.text or "").strip().split(maxsplit=2)
+            cmd = parts[0].lower().lstrip("/")
+
+            if cmd == "broadcast":
+                if len(parts) < 2:
+                    bot.reply_to(message, "⚠️ Format: <code>/broadcast E'lon matni</code>", parse_mode="HTML")
+                    return
+                b_text = (message.text or "").strip().split(maxsplit=1)[1]
+                threading.Thread(
+                    target=broadcast_message_to_all_users,
+                    args=(bot, b_text),
+                    daemon=True,
+                ).start()
+                return
+
+            if len(parts) < 2:
+                bot.reply_to(message, f"⚠️ Format: <code>/{cmd} USER_ID</code>", parse_mode="HTML")
+                return
+
+            target_uid = parts[1].strip()
+            prof = load_user_profile(target_uid)
+
+            if cmd == "ban":
+                prof["is_banned"] = True
+                save_user_profile(target_uid, prof)
+                bot.reply_to(message, f"🚫 Foydalanuvchi <code>{target_uid}</code> bloklandi (Ban).", parse_mode="HTML")
+                try:
+                    bot.send_message(target_uid, "🚫 Sizning profilingiz admin tomonidan bloklandi.")
+                except Exception:
+                    pass
+            elif cmd == "unban":
+                prof["is_banned"] = False
+                save_user_profile(target_uid, prof)
+                bot.reply_to(message, f"✅ Foydalanuvchi <code>{target_uid}</code> blokdan chiqarildi.", parse_mode="HTML")
+                try:
+                    bot.send_message(target_uid, "✅ Sizning profilingiz admin tomonidan blokdan chiqarildi!")
+                except Exception:
+                    pass
+            elif cmd == "addlimit":
+                add_cnt = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 3
+                prof["bonus_searches"] = int(prof.get("bonus_searches", 0)) + add_cnt
+                save_user_profile(target_uid, prof)
+                bot.reply_to(
+                    message,
+                    f"➕ Foydalanuvchi <code>{target_uid}</code> ga <b>+{add_cnt}</b> ta qo‘shimcha qidiruv limiti berildi "
+                    f"(Jami bonus: {prof['bonus_searches']} ta).",
+                    parse_mode="HTML",
+                )
+                try:
+                    bot.send_message(
+                        target_uid,
+                        f"🎁 Admin sizga <b>+{add_cnt} ta</b> qo‘shimcha qidiruv limiti taqdim etdi!",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            print(f"[!] Admin buyruq xatoligi: {exc}", flush=True)
+
     @bot.message_handler(commands=["start", "help"])
     def handle_start(message: Message) -> None:
         try:
             uid = str(message.chat.id)
-            profile = load_user_profile(uid)
+            profile = update_user_identity(message)
+
+            if profile.get("is_banned") and not is_admin(uid):
+                bot.send_message(uid, "🚫 Kechirasiz, sizning profilingiz admin tomonidan bloklangan.")
+                return
+
             first_name = html.escape(message.from_user.first_name if message.from_user else "Foydalanuvchi")
+            limit_str = "Cheksiz (Admin 👑)" if is_admin(uid) else f"Kuniga {DAILY_SEARCH_LIMIT} marta"
 
             if profile.get("has_resume") and profile.get("keywords"):
                 kws_str = ", ".join(profile["keywords"][:8])
                 text = (
                     f"👋 Assalomu alaykum, <b>{first_name}</b>!\n\n"
                     f"📄 <b>Yuklangan rezyumengiz:</b> <code>{html.escape(profile.get('resume_filename', 'resume.pdf'))}</code>\n"
-                    f"🔑 <b>Faol kalit so‘zlaringiz:</b> <code>{html.escape(kws_str)}</code>\n\n"
+                    f"🔑 <b>Faol kalit so‘zlaringiz:</b> <code>{html.escape(kws_str)}</code>\n"
+                    f"📊 <b>Kunlik qidiruv limiti:</b> {limit_str}\n\n"
                     "• Vakansiyalarni qidirish uchun <b>[ 🔍 Hozir qidirish ]</b> tugmasini bosing.\n"
                     "• Yangi rezyume yuklash uchun <b>PDF (.pdf)</b> faylingizni shu chatga yuboring."
                 )
@@ -1803,7 +2141,7 @@ def register_bot_handlers(
                     "📄 <b>Iltimos, rezyumengizni PDF formatida yuboring.</b>\n\n"
                     "Rezyumengizni faqat <code>.pdf</code> formatida yuklaganingizdan so‘ng, "
                     "Gemini sun'iy intellekti uni o‘qib chiqib, sizga mos ish qidirish kalit so‘zlarini avtomatik aniqlab beradi "
-                    "va <code>hh.uz</code> hamda <code>LinkedIn</code> dan mos vakansiyalarni topib keladi."
+                    f"(Kunlik bepul qidiruv limiti: <b>{limit_str}</b>)."
                 )
 
             bot.send_message(
@@ -1817,7 +2155,6 @@ def register_bot_handlers(
 
     @bot.message_handler(content_types=["document"])
     def handle_document(message: Message) -> None:
-        """Har qanday foydalanuvchi fayl yuborganda uni parallel oqimda tekshiradi (faqat PDF qabul qiladi)."""
         threading.Thread(
             target=_process_uploaded_pdf_in_thread,
             args=(bot, client, message),
@@ -1858,6 +2195,9 @@ def register_bot_handlers(
         try:
             uid = str(message.chat.id)
             profile = load_user_profile(uid)
+            if profile.get("is_banned") and not is_admin(uid):
+                bot.send_message(uid, "🚫 Kechirasiz, sizning profilingiz admin tomonidan bloklangan.")
+                return
             if not profile.get("has_resume"):
                 bot.send_message(
                     chat_id=uid,
@@ -1953,18 +2293,74 @@ def register_bot_handlers(
             print(f"[!] Qayta faollashtirish tugmasida xatolik: {exc}", flush=True)
 
     @bot.message_handler(content_types=["text"])
-    def handle_custom_keywords_input(message: Message) -> None:
+    def handle_text_input(message: Message) -> None:
         """
-        Foydalanuvchi o'zidan yangi kalit so'zlar yozib yuborganda ularni qabul qiladi,
-        mavjud ro'yxatga qo'shadi va darhol o'sha kalit so'zlar bo'yicha qidiruvni boshlaydi.
+        1. Agar Admin maxsus rejimda (broadcast, ban, addlimit) matn yozayotgan bo'lsa, uni bajaradi.
+        2. Aks holda foydalanuvchi o'zidan qo'shimcha kalit so'z yozgan bo'lsa, uni qabul qilib qidiruvni boshlaydi.
         """
         try:
             uid = str(message.chat.id)
+            sender_id = message.from_user.id if message.from_user else message.chat.id
             raw_text = (message.text or "").strip()
             if not raw_text or raw_text.startswith("/"):
                 return
 
+            # A) Admin interaktiv amali
+            if sender_id == ADMIN_ID and ADMIN_PENDING_ACTION.get(ADMIN_ID):
+                pending_mode = ADMIN_PENDING_ACTION.pop(ADMIN_ID, None)
+                if pending_mode == "broadcast":
+                    bot.reply_to(message, "📢 Xabar barcha foydalanuvchilarga yuborilmoqda...")
+                    threading.Thread(
+                        target=broadcast_message_to_all_users,
+                        args=(bot, raw_text),
+                        daemon=True,
+                    ).start()
+                    return
+
+                if pending_mode == "ban":
+                    target_uid = raw_text.split()[0].strip()
+                    prof = load_user_profile(target_uid)
+                    prof["is_banned"] = not bool(prof.get("is_banned"))
+                    save_user_profile(target_uid, prof)
+                    state_label = "🚫 Bloklandi (Ban)" if prof["is_banned"] else "✅ Blokdan chiqarildi (Unban)"
+                    bot.reply_to(
+                        message,
+                        f"Foydalanuvchi <code>{html.escape(target_uid)}</code> holati: <b>{state_label}</b>",
+                        parse_mode="HTML",
+                        reply_markup=build_admin_inline_keyboard(),
+                    )
+                    return
+
+                if pending_mode == "addlimit":
+                    parts = raw_text.split()
+                    target_uid = parts[0].strip()
+                    add_cnt = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 3
+                    prof = load_user_profile(target_uid)
+                    prof["bonus_searches"] = int(prof.get("bonus_searches", 0)) + add_cnt
+                    save_user_profile(target_uid, prof)
+                    bot.reply_to(
+                        message,
+                        f"➕ Foydalanuvchi <code>{html.escape(target_uid)}</code> ga <b>+{add_cnt}</b> ta qo‘shimcha limit berildi "
+                        f"(Jami bonus: {prof['bonus_searches']} ta).",
+                        parse_mode="HTML",
+                        reply_markup=build_admin_inline_keyboard(),
+                    )
+                    try:
+                        bot.send_message(
+                            target_uid,
+                            f"🎁 Admin sizga <b>+{add_cnt} ta</b> qo‘shimcha qidiruv limiti taqdim etdi!",
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
+                    return
+
+            # B) Oddiy foydalanuvchi (yoki Admin) kalit so'z qo'shishi
             profile = load_user_profile(uid)
+            if profile.get("is_banned") and not is_admin(uid):
+                bot.send_message(uid, "🚫 Kechirasiz, sizning profilingiz admin tomonidan bloklangan.")
+                return
+
             if not profile.get("has_resume"):
                 bot.send_message(
                     chat_id=uid,
@@ -1974,7 +2370,6 @@ def register_bot_handlers(
                 )
                 return
 
-            # Vergul, nuqtali vergul yoki yangi qator orqali yozilgan kalit so'zlarni ajratib olamiz
             new_kws = [
                 k.strip()
                 for k in re.split(r"[,;\n]+", raw_text)
@@ -2010,12 +2405,13 @@ def register_bot_handlers(
                 daemon=True,
             ).start()
         except Exception as exc:
-            print(f"[!] Kalit so'z qo'shishda xatolik: {exc}", flush=True)
+            print(f"[!] Matnni qayta ishlashda xatolik: {exc}", flush=True)
 
     @bot.callback_query_handler(func=lambda call: True)
     def handle_callback(call: CallbackQuery) -> None:
         try:
             uid = str(call.message.chat.id)
+            sender_id = call.from_user.id if call.from_user else call.message.chat.id
             data = call.data or ""
             if "|" not in data:
                 bot.answer_callback_query(call.id, "Noma'lum buyruq.")
@@ -2023,9 +2419,118 @@ def register_bot_handlers(
 
             action, param = data.split("|", 1)
 
-            # A) Kalit so'zlarni tasdiqlash yoki yangi kalit so'z qo'shish tugmalari
+            # 1. ADMIN PANEL TUGMALARI
+            if action in ("admin", "adm_quick_lim", "adm_quick_ban"):
+                if sender_id != ADMIN_ID:
+                    bot.answer_callback_query(call.id, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q", show_alert=True)
+                    return
+
+                if action == "adm_quick_lim":
+                    prof = load_user_profile(param)
+                    prof["bonus_searches"] = int(prof.get("bonus_searches", 0)) + 3
+                    save_user_profile(param, prof)
+                    bot.answer_callback_query(call.id, f"+3 limit berildi (User {param}) ✅", show_alert=True)
+                    try:
+                        bot.send_message(param, "🎁 Admin sizga <b>+3 ta</b> qo‘shimcha qidiruv limiti berdi!", parse_mode="HTML")
+                    except Exception:
+                        pass
+                    return
+
+                if action == "adm_quick_ban":
+                    prof = load_user_profile(param)
+                    prof["is_banned"] = not bool(prof.get("is_banned"))
+                    save_user_profile(param, prof)
+                    st_txt = "Bloklandi 🚫" if prof["is_banned"] else "Blokdan ochildi ✅"
+                    bot.answer_callback_query(call.id, f"User {param}: {st_txt}", show_alert=True)
+                    return
+
+                if param == "stats":
+                    stats = collect_bot_statistics()
+                    bot.answer_callback_query(call.id, "Statistika yangilandi 📊")
+                    stats_text = (
+                        "📊 <b>Bot Statistikasi (Real-vaqt):</b>\n\n"
+                        f"• 👥 <b>Jami ro‘yxatdan o‘tganlar:</b> {stats['total_users']} ta\n"
+                        f"• 📄 <b>PDF rezyume yuklaganlar:</b> {stats['with_resume']} ta\n"
+                        f"• 🔍 <b>Bugungi faol qidiruvlar soni:</b> {stats['today_searches']} ta ({stats['active_users_today']} ta faol user)\n"
+                        f"• 🚫 <b>Bloklangan foydalanuvchilar:</b> {stats['banned_users']} ta\n"
+                        f"• 🕒 <b>Vaqt:</b> <code>{get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
+                    )
+                    bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=stats_text,
+                        parse_mode="HTML",
+                        reply_markup=build_admin_inline_keyboard(),
+                    )
+                    return
+
+                if param == "users":
+                    uids = list_all_user_ids()
+                    lines: list[str] = [f"👥 <b>Ro‘yxatdan o‘tgan foydalanuvchilar ({len(uids)} ta):</b>\n"]
+                    today = get_today_str()
+                    for idx, u in enumerate(uids[:30], start=1):
+                        p = load_user_profile(u)
+                        name = html.escape(p.get("full_name") or "Foydalanuvchi")
+                        uname = f" (@{html.escape(p['username'])})" if p.get("username") else ""
+                        used = p.get("daily_search_count", 0) if p.get("daily_search_date") == today else 0
+                        bonus = p.get("bonus_searches", 0)
+                        ban_tag = " 🚫[BAN]" if p.get("is_banned") else ""
+                        res_tag = "✅PDF" if p.get("has_resume") else "➖"
+                        lines.append(
+                            f"{idx}. <b>{name}</b>{uname} — ID: <code>{u}</code> | {res_tag} | "
+                            f"Bugun: {used}/{DAILY_SEARCH_LIMIT} (+{bonus}){ban_tag}"
+                        )
+                    bot.answer_callback_query(call.id)
+                    bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text="\n".join(lines)[:4000],
+                        parse_mode="HTML",
+                        reply_markup=build_admin_inline_keyboard(),
+                    )
+                    return
+
+                if param == "broadcast":
+                    ADMIN_PENDING_ACTION[ADMIN_ID] = "broadcast"
+                    bot.answer_callback_query(call.id)
+                    bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text="📢 <b>Barcha foydalanuvchilarga yubormoqchi bo‘lgan xabar matnini yozib yuboring:</b>",
+                        parse_mode="HTML",
+                    )
+                    return
+
+                if param == "addlimit":
+                    ADMIN_PENDING_ACTION[ADMIN_ID] = "addlimit"
+                    bot.answer_callback_query(call.id)
+                    bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=(
+                            "➕ <b>Qo‘shimcha limit bermoqchi bo‘lgan foydalanuvchi ID raqamini (va limit sonini) yozing:</b>\n"
+                            "<i>Masalan:</i> <code>123456789 5</code>"
+                        ),
+                        parse_mode="HTML",
+                    )
+                    return
+
+                if param == "ban":
+                    ADMIN_PENDING_ACTION[ADMIN_ID] = "ban"
+                    bot.answer_callback_query(call.id)
+                    bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=(
+                            "🚫 <b>Bloklamoqchi yoki blokdan chiqarmoqchi bo‘lgan foydalanuvchi ID raqamini yozing:</b>\n"
+                            "<i>Masalan:</i> <code>123456789</code>"
+                        ),
+                        parse_mode="HTML",
+                    )
+                    return
+
+            # 2. FOYDALANUVCHI KALIT SO'Z TASDIQLASH TUGMALARI
             if action == "kw_action":
                 profile = load_user_profile(uid)
+                if profile.get("is_banned") and not is_admin(uid):
+                    bot.answer_callback_query(call.id, "Profilingiz bloklangan 🚫", show_alert=True)
+                    return
+
                 if param == "confirm":
                     profile["awaiting_extra_keywords"] = False
                     save_user_profile(uid, profile)
@@ -2052,7 +2557,7 @@ def register_bot_handlers(
                     )
                     return
 
-            # B) Vakansiya uchun Kover-xat yozish yoki O'tkazib yuborish (parallel oqimda)
+            # 3. VAKANSIYA UCHUN KOVER-XAT YOZISH YOKI O'TKAZIB YUBORISH
             vac_id = param
 
             def _handle_vacancy_action() -> None:
@@ -2126,14 +2631,15 @@ def register_bot_handlers(
 
 
 # =====================================================================
-# 14. ASOSIY ISHGA TUSHIRISH FUNKSIYASI (MAIN)
+# 15. ASOSIY ISHGA TUSHIRISH FUNKSIYASI (MAIN)
 # =====================================================================
 
 def main() -> None:
     print("=" * 88, flush=True)
-    print(" KO'P FOYDALANUVCHILI (MULTI-USER & NON-BLOCKING) AI ISH QIDIRISH BOTI", flush=True)
+    print(" KO'P FOYDALANUVCHILI AI ISH QIDIRISH BOTI + ADMIN PANELI (ADMIN_ID = 608221268)", flush=True)
     print(f" Ishchi papka   : {BASE_DIR}", flush=True)
     print(f" Userlar bazasi : {USERS_DIR}", flush=True)
+    print(f" Admin ID       : {ADMIN_ID}", flush=True)
     print(f" Toshkent vaqti : {get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S (UTC+5)')}", flush=True)
     print("=" * 88, flush=True)
 
@@ -2143,7 +2649,6 @@ def main() -> None:
     config = get_config()
     client = genai.Client(api_key=config["GEMINI_API_KEY"])
 
-    # Ko'p foydalanuvchilar bir vaqtda yozganda qotib qolmasligi uchun threaded=True va num_threads=16
     bot = telebot.TeleBot(config["TELEGRAM_BOT_TOKEN"], threaded=True, num_threads=16)
 
     register_bot_handlers(bot, client)
@@ -2152,23 +2657,22 @@ def main() -> None:
     sched_thread = threading.Thread(target=schedule_runner_loop, daemon=True)
     sched_thread.start()
 
-    if config.get("ADMIN_CHAT_ID"):
-        try:
-            bot.send_message(
-                chat_id=config["ADMIN_CHAT_ID"],
-                text=(
-                    "✅ <b>Multi-User AI Ish Qidirish Boti ishga tushdi!</b>\n\n"
-                    "• Endi botdan istalgan foydalanuvchi parallel foydalana oladi.\n"
-                    "• Har bir foydalanuvchi o‘z rezyumesini <b>PDF formatda</b> yuboradi -> "
-                    "AI avtomatik kalit so‘zlarni aniqlab, tasdiqlatadi yoki yangi so‘zlar qo‘shdirib qidiruvni boshlaydi."
-                ),
-                parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
-            )
-        except Exception:
-            pass
+    try:
+        bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "👑 <b>Admin tizimi bilan jihozlangan Multi-User AI Bot ishga tushdi!</b>\n\n"
+                f"• <b>Sizning Admin ID:</b> <code>{ADMIN_ID}</code> (Cheksiz limit)\n"
+                f"• <b>Oddiy foydalanuvchilar limiti:</b> Kuniga {DAILY_SEARCH_LIMIT} marta\n"
+                "• Admin panelni ochish uchun: <b>/admin</b> buyrug‘ini bosing."
+            ),
+            parse_mode="HTML",
+            reply_markup=build_main_reply_keyboard(),
+        )
+    except Exception as exc:
+        print(f"  [!] Admin xabarini yuborishda xatolik: {exc}", flush=True)
 
-    print("\n[4/4] Multi-User Telegram Bot faol!", flush=True)
+    print("\n[4/4] Multi-User Telegram Bot + Admin Panel faol!", flush=True)
 
     while True:
         try:
