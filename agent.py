@@ -1,20 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-O'zbekistondagi Energetika, Loyihalash va Muhandislik Vakansiyalari AI Agenti (Render.com 24/7 Ready)
-Yangilangan himoya va qoidalar:
-1. Gemini API limiti tugaganda (429 Quota Exceeded / RESOURCE_EXHAUSTED) yoki har qanday AI xatoligida
-   bot to'xtab qolmaydi (qulab tushmaydi).
-2. AI limiti tugaganda foydalanuvchiga "⚠️ AI limiti tugadi, lekin topilgan vakansiyalar:" deb xabar beradi
-   va topilgan vakansiyalarni AI tahlilisiz (kompaniya nomi, vakansiya sarlavhasi va havolasi bilan
-   oddiy, tushunarli ko'rinishda) Telegramga yuboradi.
-3. LinkedIn qismi o'zgarishsiz saqlangan, hh.uz 403 himoyasi, 30 kunlik filtr va 5 tadan batching faol.
+Ko'p Foydalanuvchili (Multi-User & Non-Blocking) AI Ish Qidirish Telegram Boti (Render.com 24/7 Ready)
+
+Asosiy imkoniyatlar:
+1. Multi-user & Non-blocking (Parallel ishlash):
+   - Botga istalgan foydalanuvchi kirib /start bosishi va o'z shaxsiy rezyumesi bilan foydalanishi mumkin.
+   - Bir vaqtda ko'p odam yozganda qotib qolmaydi (ko'p oqimli `threaded=True` + har bir foydalanuvchi uchun alohida oqim).
+   - Har bir foydalanuvchining rezyumesi, kalit so'zlari va qidiruv tarixi `users/<user_id>/` papkasida
+     alohida saqlanadi va bir-biriga mutlaqo aralashib ketmaydi.
+2. Rezyumeni faqat PDF formatida qabul qilish:
+   - Foydalanuvchi PDF yuborsa, uni o'qib oladi; boshqa format yuborsa, faqat PDF yuborishni so'raydi.
+3. Rezyumedan avtomatik kalit so'z aniqlash va qo'shimcha kalit so'z qo'shish:
+   - PDF rezyume yuklangach, Gemini AI uni tahlil qilib, shu mutaxassisga mos ish qidirish kalit so'zlarini chiqaradi.
+   - Foydalanuvchidan: "Sizning rezyumengiz asosida quyidagi kalit so'zlar aniqlandi. Shular bo'yicha qidiraylikmi
+     yoki yana boshqa kalit so'z qo'shasizmi?" deb so'raydi.
+   - Foydalanuvchi tasdiqlashi yoki o'zidan yangi kalit so'zlar qo'shib qidiruvni boshlashi mumkin.
+4. LinkedIn (Guest API) + hh.uz (403 Fix), 30 kunlik filtr, 5 tadan Batch tahlil, 429 Quota himoyasi
+   va interaktiv [ ✍️ Kover-xat yozish ] tugmasi to'liq saqlangan.
 """
 
 from __future__ import annotations
 
 import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -109,18 +119,8 @@ HH_HEADER_PROFILES: list[dict[str, str]] = [
 
 DEFAULT_PROJECT_DIR = Path(r"D:\IshAgenti")
 BASE_DIR = DEFAULT_PROJECT_DIR if DEFAULT_PROJECT_DIR.exists() else Path(__file__).resolve().parent
-OUTPUT_DIR = BASE_DIR / "natijalar"
-STATE_FILE = OUTPUT_DIR / "vacancies_state.json"
-SEEN_JOBS_FILE = BASE_DIR / "seen_jobs.txt"
+USERS_DIR = BASE_DIR / "users"
 
-RESUME_FILES: dict[str, Path] = {
-    "uz": BASE_DIR / "rezyume_uz.pdf",
-    "ru": BASE_DIR / "rezyume_ru.pdf",
-    "en": BASE_DIR / "rezyume_en.pdf",
-}
-
-# Bir modelning kunlik limiti (20 ta so'rov) tugasa, keyingi modelga o'tadi;
-# barchasining limiti tugasa, AI tahlilisiz oddiy matn rejimiga o'tadi!
 GEMINI_MODEL = "gemini-3.0-flash"
 GEMINI_MODEL_CANDIDATES: list[str] = [
     "gemini-3.0-flash",
@@ -133,83 +133,73 @@ ACTIVE_GEMINI_MODEL: str | None = None
 SCHEDULE_TIMES_UZT: list[str] = ["09:00", "19:00"]
 
 HIGH_MATCH_THRESHOLD = 80
-MEDIUM_MATCH_THRESHOLD = 0
-
 GEMINI_BATCH_SIZE = 5
 MAX_VACANCY_AGE_DAYS = 30
 
-MAX_HH_VACANCIES_PER_SCAN = 35
+MAX_HH_VACANCIES_PER_SCAN = 30
 MAX_LINKEDIN_JOBS_PER_SCAN = 15
 
 HH_API_BASE_URL = "https://api.hh.ru/vacancies"
 UZBEKISTAN_AREA_ID = "97"
 
-HH_SEARCH_KEYWORDS: list[str] = [
+# Standart zaxira kalit so'zlar (agar rezyumedan kalit so'z chiqmasa yoki AI limiti tugagan bo'lsa)
+DEFAULT_FALLBACK_KEYWORDS: list[str] = [
     "Энергетик",
-    "Электроэнергетика",
-    "Главный энергетик",
-    "Электрик",
-    "Электромонтажник",
-    "Electrical Engineer",
-    "Energetik",
-    "Elektroenergetika",
-    "Инженер-проектировщик",
-    "Проектировщик",
-    "Промэлектропроект",
-    "Электроснабжение",
-    "ЭОМ",
-    "Электроосвещение",
-    "Muhandis-proyektirovshchik",
-    "Engineer",
     "Инженер-энергетик",
+    "Инженер-проектировщик",
     "Инженер ПТО",
+    "Электрик",
+    "Electrical Engineer",
+    "Project Engineer",
+    "ЭОМ",
+    "Электроснабжение",
     "Главный инженер",
-    "Технический директор",
-    "Технолог",
-    "Строительный контроль",
-    "Наладчик",
-]
-
-TARGET_KEYWORDS: list[str] = [kw.lower() for kw in HH_SEARCH_KEYWORDS] + [
-    "инженер",
-    "силовое электрооборудование",
-    "релейной защиты",
-    "рза",
-    "кипиа",
-    "асутп",
-    "подстанц",
-    "solar",
-    "energy",
 ]
 
 # 2-MANBA: LinkedIn Public Guest API (TEGILMADI)
 LINKEDIN_GUEST_SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 LINKEDIN_GUEST_DETAIL_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 
-LINKEDIN_SEARCH_KEYWORDS: list[str] = [
-    "Electrical Engineer",
-    "Energy Engineer",
-    "Project Engineer",
-    "Энергетик",
-    "Инженер ПТО",
-    "Инженер-проектировщик",
-]
-
 # Telegram Reply Keyboard tugmalari matni
 BTN_SEARCH_NOW = "🔍 Hozir qidirish"
+BTN_UPLOAD_RESUME = "📄 Rezyume yuklash (PDF)"
+BTN_MY_KEYWORDS = "🔑 Kalit so‘zlarim"
+BTN_CLEAR_SEEN = "🗑️ Tarixni tozalash"
 BTN_STOP_SEARCH = "⏹️ Qidiruvni to‘xtatish"
 BTN_RESUME_SCHEDULE = "▶️ Qayta faollashtirish"
-BTN_CLEAR_SEEN = "🗑️ Tarixni tozalash"
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 PHONE_REGEX = re.compile(r"(?:\+?998[\s\-()]*)?(?:\d{2}[\s\-()]*)\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 
-STATE_LOCK = threading.Lock()
-SEEN_LOCK = threading.Lock()
-SCAN_LOCK = threading.Lock()
+# Har bir foydalanuvchi (user_id) uchun alohida Lock va Stop Event obyektlari
+USER_LOCKS_GUARD = threading.Lock()
+USER_DATA_LOCKS: dict[str, threading.Lock] = {}
+USER_SCAN_LOCKS: dict[str, threading.Lock] = {}
+USER_STOP_EVENTS: dict[str, threading.Event] = {}
 
-STOP_SCAN_EVENT = threading.Event()
-AUTO_SCHEDULE_ENABLED = True
+
+def get_user_data_lock(user_id: str | int) -> threading.Lock:
+    uid = str(user_id)
+    with USER_LOCKS_GUARD:
+        if uid not in USER_DATA_LOCKS:
+            USER_DATA_LOCKS[uid] = threading.Lock()
+        return USER_DATA_LOCKS[uid]
+
+
+def get_user_scan_lock(user_id: str | int) -> threading.Lock:
+    uid = str(user_id)
+    with USER_LOCKS_GUARD:
+        if uid not in USER_SCAN_LOCKS:
+            USER_SCAN_LOCKS[uid] = threading.Lock()
+        return USER_SCAN_LOCKS[uid]
+
+
+def get_user_stop_event(user_id: str | int) -> threading.Event:
+    uid = str(user_id)
+    with USER_LOCKS_GUARD:
+        if uid not in USER_STOP_EVENTS:
+            USER_STOP_EVENTS[uid] = threading.Event()
+        return USER_STOP_EVENTS[uid]
 
 
 # =====================================================================
@@ -219,6 +209,7 @@ AUTO_SCHEDULE_ENABLED = True
 def auto_setup() -> None:
     """Render.com, Koyeb va GitHub uchun zarur fayllarni UTF-8 formatda yaratadi."""
     print("\n[0/4] Render.com / Koyeb va GitHub uchun loyiha fayllari tekshirilmoqda (auto_setup)...", flush=True)
+    USERS_DIR.mkdir(parents=True, exist_ok=True)
 
     requirements_content = (
         "google-genai\n"
@@ -252,6 +243,7 @@ def auto_setup() -> None:
         "__pycache__/\n"
         "*.py[cod]\n"
         "natijalar/\n"
+        "users/\n"
     )
 
     files_to_create: dict[Path, str] = {
@@ -281,10 +273,9 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         payload = {
             "status": "ok",
-            "service": "UzEnergyJobAgent",
+            "service": "MultiUserJobAgent",
             "model": ACTIVE_GEMINI_MODEL or GEMINI_MODEL,
             "tashkent_time": get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S UTC+5"),
-            "auto_schedule_enabled": AUTO_SCHEDULE_ENABLED,
         }
         self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
@@ -309,7 +300,6 @@ def start_health_check_server() -> None:
             print(f"  [!] Health Check server xatoligi (port {port}): {exc}", flush=True)
 
     def _keep_alive_ping() -> None:
-        """Render bepul tarifda 15 daqiqadan keyin uxlab qolmasligi uchun har 10 daqiqada ping yuboradi."""
         while True:
             time.sleep(600)
             ext_url = os.environ.get("RENDER_EXTERNAL_URL") or f"http://127.0.0.1:{port}/"
@@ -323,8 +313,23 @@ def start_health_check_server() -> None:
 
 
 # =====================================================================
-# 4. GEMINI BATCH TAHLIL SXEMALARI (PYDANTIC)
+# 4. GEMINI SXEMALARI (KALIT SO'Z ANIQLASH + BATCH TAHLIL)
 # =====================================================================
+
+class ResumeKeywordsExtraction(BaseModel):
+    detected_language: Literal["uz", "ru", "en"] = Field(
+        description="Rezyume yozilgan asosiy til: 'uz', 'ru' yoki 'en'."
+    )
+    candidate_profession: str = Field(
+        description="Nomzodning asosiy kasbi yoki yo'nalishi (qisqa 2-5 so'z)."
+    )
+    suggested_keywords: list[str] = Field(
+        description=(
+            "Ushbu nomzodga O'zbekistonda (hh.uz va LinkedIn da) ish topish uchun eng mos "
+            "8 tadan 12 tagacha aniq kalit so'zlar va lavozim nomlari (rus, ingliz va o'zbek tillarida)."
+        )
+    )
+
 
 class BatchVacancyItemEvaluation(BaseModel):
     vacancy_id: str = Field(description="Vakansiyaning unikal ID raqami.")
@@ -334,14 +339,14 @@ class BatchVacancyItemEvaluation(BaseModel):
     match_score: int = Field(
         ge=0,
         le=100,
-        description="Nomzodga moslik foizi (0–100%). Ish staji talabi ballni tushirmasin!",
+        description="Nomzod rezyumesiga moslik foizi (0–100%). Ish staji talabi ballni tushirmasin!",
     )
     contact_details: str = Field(
         default="",
         description="Vakansiyada ko'rsatilgan qisqa aloqa ma'lumoti."
     )
     short_summary: str = Field(
-        description="Juda qisqa (maksimal 1-2 gap) asosiy vazifa va moslik sababi."
+        description="Juda qisqa (maksimal 1-2 gap) asosiy vazifa va nomzodga moslik sababi."
     )
 
 
@@ -352,69 +357,144 @@ class BatchVacancyEvaluationList(BaseModel):
 
 
 # =====================================================================
-# 5. TAKRORIY VA ESKIRGAN E'LONLARDAN HIMOYALASH
+# 5. HAR BIR FOYDALANUVCHI (USER_ID) MA'LUMOTLARINI ALOHIDA SAQLASH
 # =====================================================================
 
-def load_seen_jobs() -> set[str]:
-    with SEEN_LOCK:
+def get_user_dir(user_id: str | int) -> Path:
+    d = USERS_DIR / str(user_id).strip()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def load_user_profile(user_id: str | int) -> dict[str, Any]:
+    """Har bir foydalanuvchining shaxsiy profili, rezyume matni va kalit so'zlarini o'qiydi."""
+    uid = str(user_id).strip()
+    user_dir = get_user_dir(uid)
+    profile_path = user_dir / "profile.json"
+    lock = get_user_data_lock(uid)
+
+    with lock:
+        if profile_path.exists():
+            try:
+                return json.loads(profile_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        default_profile: dict[str, Any] = {
+            "user_id": uid,
+            "has_resume": False,
+            "resume_filename": "",
+            "resume_lang": "ru",
+            "resume_text": "",
+            "profession": "",
+            "keywords": [],
+            "awaiting_extra_keywords": False,
+            "auto_schedule_enabled": True,
+            "created_at": get_tashkent_now().isoformat(timespec="seconds"),
+            "updated_at": get_tashkent_now().isoformat(timespec="seconds"),
+        }
+        return default_profile
+
+
+def save_user_profile(user_id: str | int, profile: dict[str, Any]) -> None:
+    uid = str(user_id).strip()
+    user_dir = get_user_dir(uid)
+    profile_path = user_dir / "profile.json"
+    profile["updated_at"] = get_tashkent_now().isoformat(timespec="seconds")
+    lock = get_user_data_lock(uid)
+
+    with lock:
         try:
-            if not SEEN_JOBS_FILE.exists():
-                SEEN_JOBS_FILE.write_text("", encoding="utf-8")
-                return set()
-            lines = SEEN_JOBS_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
-            return {line.strip() for line in lines if line.strip()}
+            profile_path.write_text(
+                json.dumps(profile, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         except Exception as exc:
-            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} faylini o'qishda xatolik: {exc}", flush=True)
+            print(f"[OGOHLANTIRISH] User {uid} profilini saqlashda xatolik: {exc}", flush=True)
+
+
+def list_all_active_user_ids() -> list[str]:
+    """Avtomatik jadval (09:00 va 19:00) uchun rezyume yuklagan barcha foydalanuvchilar ro'yxatini qaytaradi."""
+    if not USERS_DIR.exists():
+        return []
+    uids: list[str] = []
+    for sub in USERS_DIR.iterdir():
+        if sub.is_dir() and (sub / "profile.json").exists():
+            uids.append(sub.name)
+    return uids
+
+
+def load_user_seen_jobs(user_id: str | int) -> set[str]:
+    """Foydalanuvchining shaxsiy seen_jobs.txt faylini o'qiydi."""
+    uid = str(user_id).strip()
+    seen_file = get_user_dir(uid) / "seen_jobs.txt"
+    lock = get_user_data_lock(uid)
+    with lock:
+        try:
+            if not seen_file.exists():
+                seen_file.write_text("", encoding="utf-8")
+                return set()
+            lines = seen_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+            return {line.strip() for line in lines if line.strip()}
+        except Exception:
             return set()
 
 
-def clear_seen_jobs() -> None:
-    with SEEN_LOCK:
+def clear_user_seen_jobs(user_id: str | int) -> None:
+    uid = str(user_id).strip()
+    seen_file = get_user_dir(uid) / "seen_jobs.txt"
+    lock = get_user_data_lock(uid)
+    with lock:
         try:
-            SEEN_JOBS_FILE.write_text("", encoding="utf-8")
-        except Exception as exc:
-            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} faylini tozalashda xatolik: {exc}", flush=True)
+            seen_file.write_text("", encoding="utf-8")
+        except Exception:
+            pass
 
 
-def mark_job_as_seen(vac_id: str) -> None:
+def mark_user_job_as_seen(user_id: str | int, vac_id: str) -> None:
+    uid = str(user_id).strip()
     vac_id = str(vac_id).strip()
     if not vac_id:
         return
-    with SEEN_LOCK:
+    seen_file = get_user_dir(uid) / "seen_jobs.txt"
+    lock = get_user_data_lock(uid)
+    with lock:
         try:
-            with SEEN_JOBS_FILE.open("a", encoding="utf-8") as f:
+            with seen_file.open("a", encoding="utf-8") as f:
                 f.write(f"{vac_id}\n")
-        except Exception as exc:
-            print(f"[OGOHLANTIRISH] {SEEN_JOBS_FILE.name} fayliga yozishda xatolik: {exc}", flush=True)
+        except Exception:
+            pass
 
 
-def is_vacancy_fresh(published_at_str: str, max_days: int = MAX_VACANCY_AGE_DAYS) -> bool:
-    if not published_at_str:
-        return True
-    raw = str(published_at_str).strip()
-    try:
-        date_part = raw[:10]
-        pub_date = datetime.strptime(date_part, "%Y-%m-%d").date()
-        today_date = get_tashkent_now().date()
-        age_days = (today_date - pub_date).days
-        return age_days <= max_days
-    except Exception:
-        return True
+def load_user_state(user_id: str | int) -> dict[str, dict[str, Any]]:
+    uid = str(user_id).strip()
+    state_file = get_user_dir(uid) / "vacancies_state.json"
+    lock = get_user_data_lock(uid)
+    with lock:
+        if not state_file.exists():
+            return {}
+        try:
+            return json.loads(state_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
 
 
-def find_matched_keywords(title: str, description: str, source_kw: str = "") -> list[str]:
-    haystack = f"{title} {description}".lower()
-    matched: list[str] = []
-    if source_kw:
-        matched.append(source_kw)
-    for kw in TARGET_KEYWORDS:
-        if kw in haystack and kw.lower() not in [m.lower() for m in matched]:
-            matched.append(kw)
-    return matched[:5]
+def save_user_state(user_id: str | int, state: dict[str, dict[str, Any]]) -> None:
+    uid = str(user_id).strip()
+    state_file = get_user_dir(uid) / "vacancies_state.json"
+    lock = get_user_data_lock(uid)
+    with lock:
+        try:
+            state_file.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
 
 # =====================================================================
-# 6. KONFIGURATSIYA VA .ENV YUKLASH (python-dotenv)
+# 6. KONFIGURATSIYA, PDF O'QISH VA YORDAMCHI FUNKSIYALAR
 # =====================================================================
 
 def get_config() -> dict[str, str]:
@@ -423,15 +503,13 @@ def get_config() -> dict[str, str]:
 
     gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     tg_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    tg_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    admin_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
     missing: list[str] = []
     if not gemini_key:
         missing.append("GEMINI_API_KEY")
     if not tg_token:
         missing.append("TELEGRAM_BOT_TOKEN")
-    if not tg_chat_id:
-        missing.append("TELEGRAM_CHAT_ID")
 
     if missing:
         print("\n[XATOLIK] Quyidagi muhim kalitlar topilmadi:", ", ".join(missing), flush=True)
@@ -440,19 +518,14 @@ def get_config() -> dict[str, str]:
     return {
         "GEMINI_API_KEY": gemini_key,
         "TELEGRAM_BOT_TOKEN": tg_token,
-        "TELEGRAM_CHAT_ID": tg_chat_id,
+        "ADMIN_CHAT_ID": admin_chat_id,
     }
 
 
-# =====================================================================
-# 7. PDF REZYUMELARNI O'QISH VA TILNI ANIQLASH
-# =====================================================================
-
-def extract_text_from_pdf(pdf_path: Path) -> str:
-    if not pdf_path.exists():
-        return ""
+def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+    """Telegramdan yuklab olingan PDF fayl baytlaridan matnni ajratib oladi."""
     try:
-        reader = PdfReader(str(pdf_path))
+        reader = PdfReader(io.BytesIO(pdf_bytes))
         pages_text: list[str] = []
         for page in reader.pages:
             page_text = page.extract_text() or ""
@@ -460,29 +533,8 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
                 pages_text.append(page_text.strip())
         return "\n\n".join(pages_text).strip()
     except Exception as exc:
-        print(f"[OGOHLANTIRISH] {pdf_path.name} faylini o'qishda xatolik: {exc}", flush=True)
+        print(f"[OGOHLANTIRISH] PDF matnini o'qishda xatolik: {exc}", flush=True)
         return ""
-
-
-def load_all_resumes() -> dict[str, str]:
-    resumes: dict[str, str] = {}
-    print("\n[1/4] PDF rezyumelar tekshirilmoqda...", flush=True)
-    for lang, path in RESUME_FILES.items():
-        text = extract_text_from_pdf(path)
-        if text:
-            resumes[lang] = text
-            print(f"  [+] {path.name} ({lang.upper()}) muvaffaqiyatli o'qildi ({len(text)} belgi).", flush=True)
-        else:
-            print(f"  [-] {path.name} ({lang.upper()}) topilmadi yoki bo'sh: {path}", flush=True)
-
-    if not resumes:
-        print("  [!] PDF rezyumelar topilmadi, standart Junior Energetik/Muhandis profili ishlatiladi.", flush=True)
-        resumes = {
-            "uz": "Energetika va elektrotexnika yo'nalishi bo'yicha oliy ma'lumotli muhandis. AutoCAD (elektr chizmalar, sxemalar) va MS Office dasturlarini mukammal biladi.",
-            "ru": "Инженер-энергетик / проектировщик с высшим профильным образованием. Отличное владение AutoCAD (однолинейные схемы, чертежи ЭОМ, электроснабжение, ПТО) и MS Office.",
-            "en": "Electrical & Energy Engineer with a Bachelor's degree in Power Engineering. Proficient in AutoCAD (electrical schematics, layouts, power supply) and MS Office.",
-        }
-    return resumes
 
 
 def detect_language_fast(text: str) -> Literal["uz", "ru", "en"]:
@@ -528,6 +580,31 @@ def clean_html(raw_html: str) -> str:
     return re.sub(r"\s+", " ", unescaped).strip()
 
 
+def is_vacancy_fresh(published_at_str: str, max_days: int = MAX_VACANCY_AGE_DAYS) -> bool:
+    if not published_at_str:
+        return True
+    raw = str(published_at_str).strip()
+    try:
+        date_part = raw[:10]
+        pub_date = datetime.strptime(date_part, "%Y-%m-%d").date()
+        today_date = get_tashkent_now().date()
+        age_days = (today_date - pub_date).days
+        return age_days <= max_days
+    except Exception:
+        return True
+
+
+def find_matched_keywords(title: str, description: str, user_keywords: list[str], source_kw: str = "") -> list[str]:
+    haystack = f"{title} {description}".lower()
+    matched: list[str] = []
+    if source_kw:
+        matched.append(source_kw)
+    for kw in user_keywords:
+        if kw.lower() in haystack and kw.lower() not in [m.lower() for m in matched]:
+            matched.append(kw)
+    return matched[:5]
+
+
 def extract_contacts_from_vacancy(detail: dict[str, Any], full_text: str) -> str:
     parts: list[str] = []
     contacts = detail.get("contacts") or {}
@@ -558,6 +635,139 @@ def extract_contacts_from_vacancy(detail: dict[str, Any], full_text: str) -> str
             parts.append(f"Tel: {clean_phone}")
 
     return " | ".join(parts)
+
+
+# =====================================================================
+# 7. GEMINI YORDAMIDA REZYUMEDAN AVTOMATIK KALIT SO'Z TAXMIN QILISH
+# =====================================================================
+
+def _call_gemini_with_fallback(
+    client: genai.Client,
+    prompt: str,
+    response_schema: Any = None,
+) -> Any:
+    global ACTIVE_GEMINI_MODEL
+    models_to_try: list[str] = []
+    if ACTIVE_GEMINI_MODEL:
+        models_to_try.append(ACTIVE_GEMINI_MODEL)
+    for m in GEMINI_MODEL_CANDIDATES:
+        if m not in models_to_try:
+            models_to_try.append(m)
+
+    last_error: Exception | None = None
+
+    for model_name in models_to_try:
+        try:
+            cfg = (
+                types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=response_schema,
+                    temperature=0.2,
+                )
+                if response_schema
+                else types.GenerateContentConfig(temperature=0.3)
+            )
+            resp = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=cfg,
+            )
+            if ACTIVE_GEMINI_MODEL != model_name:
+                ACTIVE_GEMINI_MODEL = model_name
+                print(f"  [+] Faol Gemini modeli: {ACTIVE_GEMINI_MODEL}", flush=True)
+            return resp
+        except Exception as exc:
+            last_error = exc
+            err_str = str(exc)
+            if any(code in err_str for code in ("429", "RESOURCE_EXHAUSTED", "Quota", "404", "NOT_FOUND", "503")):
+                ACTIVE_GEMINI_MODEL = None
+                continue
+            break
+
+    raise RuntimeError(f"{last_error}")
+
+
+def _extract_keywords_fallback_from_text(resume_text: str) -> tuple[list[str], str, Literal["uz", "ru", "en"]]:
+    """Agar Gemini API limiti tugagan paytda yangi foydalanuvchi rezyume yuklasa, matndan kalit so'zlarni ajratadi."""
+    lang = detect_language_fast(resume_text)
+    sample = resume_text.lower()
+
+    common_roles = [
+        ("энергетик", "Энергетик"),
+        ("инженер-проектировщик", "Инженер-проектировщик"),
+        ("проектировщик", "Проектировщик"),
+        ("инженер пто", "Инженер ПТО"),
+        ("пто", "Инженер ПТО"),
+        ("электрик", "Электрик"),
+        ("электромонтажник", "Электромонтажник"),
+        ("главный инженер", "Главный инженер"),
+        ("главный энергетик", "Главный энергетик"),
+        ("electrical engineer", "Electrical Engineer"),
+        ("energy", "Energy Engineer"),
+        ("project manager", "Project Manager"),
+        ("project engineer", "Project Engineer"),
+        ("autocad", "Инженер AutoCAD"),
+        ("python", "Python Developer"),
+        ("backend", "Backend Developer"),
+        ("frontend", "Frontend Developer"),
+        ("бухгалтер", "Бухгалтер"),
+        ("маркетолог", "Маркетолог"),
+        ("менеджер", "Менеджер проектов"),
+        ("инженер", "Инженер"),
+        ("muhandis", "Muhandis"),
+        ("energetik", "Energetik"),
+    ]
+    found: list[str] = []
+    for needle, label in common_roles:
+        if needle in sample and label not in found:
+            found.append(label)
+
+    if not found:
+        found = list(DEFAULT_FALLBACK_KEYWORDS[:8])
+
+    profession = found[0] if found else "Mutaxassis"
+    return found[:10], profession, lang
+
+
+def extract_keywords_from_resume_with_gemini(
+    client: genai.Client,
+    resume_text: str,
+) -> tuple[list[str], str, Literal["uz", "ru", "en"]]:
+    """
+    Yangi foydalanuvchi yuborgan PDF rezyume matnini Gemini orqali o'qib,
+    unga mos ish qidirish kalit so'zlarini (keywords) avtomatik taxmin qiladi.
+    """
+    prompt = f"""
+Siz professional HR va karyera maslahatchisisiz.
+Quyidagi NOMZOD REZYUMESI matnini diqqat bilan o'qib chiqing va ushbu inson O'zbekistonda (hh.uz va LinkedIn orqali) ish topishi uchun ENG MOS keladigan 8 tadan 12 tagacha qidiruv kalit so'zlarini (`suggested_keywords`) aniqlab bering.
+
+QOIDALAR:
+1. Kalit so'zlar aniq lavozim nomlari va asosiy ixtisoslik so'zlari bo'lsin (masalan: "Инженер-энергетик", "Инженер-проектировщик", "Инженер ПТО", "Electrical Engineer", "Энергетик", "ЭОМ", "Project Engineer" yoki rezyumedagi haqiqiy kasbiga mos rus/ingliz/o'zbek tilidagi lavozimlar).
+2. Har bir kalit so'z qisqa (1–3 so'zdan iborat), qidiruv tizimi (`hh.uz` va `LinkedIn`) oson topadigan formatda bo'lsin.
+
+--- NOMZOD REZYUMESI MATNI ---
+{resume_text[:8000]}
+""".strip()
+
+    try:
+        resp = _call_gemini_with_fallback(
+            client=client,
+            prompt=prompt,
+            response_schema=ResumeKeywordsExtraction,
+        )
+        if resp.parsed and isinstance(resp.parsed, ResumeKeywordsExtraction):
+            parsed: ResumeKeywordsExtraction = resp.parsed
+        else:
+            raw_data = json.loads(resp.text or "{}")
+            parsed = ResumeKeywordsExtraction(**raw_data)
+
+        cleaned_kws = [kw.strip() for kw in parsed.suggested_keywords if kw.strip()]
+        if cleaned_kws:
+            return cleaned_kws[:12], parsed.candidate_profession, parsed.detected_language
+    except Exception as exc:
+        print(f"  [!] Rezyumedan kalit so'z ajratishda Gemini xatoligi ({str(exc)[:100]}) — lokal tahlil ishlatildi.", flush=True)
+
+    return _extract_keywords_fallback_from_text(resume_text)
 
 
 # =====================================================================
@@ -624,6 +834,7 @@ def _scrape_hh_web_fallback(kw: str, session: requests.Session) -> list[dict[str
 def fetch_new_hh_uz_vacancies(
     keywords: list[str],
     seen_jobs: set[str],
+    stop_event: threading.Event,
     max_items: int = MAX_HH_VACANCIES_PER_SCAN,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     now_str = get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S")
@@ -639,7 +850,7 @@ def fetch_new_hh_uz_vacancies(
     api_errors: list[str] = []
 
     for kw in keywords:
-        if STOP_SCAN_EVENT.is_set():
+        if stop_event.is_set():
             break
 
         params = {
@@ -700,31 +911,13 @@ def fetch_new_hh_uz_vacancies(
                 skipped_seen_count += 1
                 continue
 
-            title_str = str(item.get("name") or "")
-            snip_req = str(((item.get("snippet") or {}).get("requirement")) or "")
-            snip_resp = str(((item.get("snippet") or {}).get("responsibility")) or "")
-            combined_short = f"{title_str} {snip_req} {snip_resp}".lower()
-
-            if kw.lower() in ("строительный контроль", "технолог"):
-                if not any(
-                    w in combined_short
-                    for w in ["энерг", "электр", "эом", "пто", "проектир", "инженер", "сет", "кабел", "подстанц", "кипиа", "асутп"]
-                ):
-                    continue
-
             new_short_vacancies.append((item, kw))
 
         time.sleep(0.15)
 
-    print(
-        f"  [*] [hh.uz] Yakunlandi: Jami {len(batch_seen_ids)} ta -> "
-        f"Yangisi: {len(new_short_vacancies)} ta, Avval ko'rilgan: {skipped_seen_count} ta, Eskirgan: {skipped_old_count} ta.",
-        flush=True,
-    )
-
     detailed_vacancies: list[dict[str, Any]] = []
     for item, source_kw in new_short_vacancies[:max_items]:
-        if STOP_SCAN_EVENT.is_set():
+        if stop_event.is_set():
             break
         raw_id = str(item.get("id")).strip()
         vac_id = f"hh_{raw_id}"
@@ -741,7 +934,7 @@ def fetch_new_hh_uz_vacancies(
         snippet_resp = clean_html(str(((item.get("snippet") or {}).get("responsibility")) or ""))
         short_desc = f"{snippet_req} {snippet_resp}".strip() or title
 
-        matched_kws = find_matched_keywords(title, short_desc, source_kw=source_kw)
+        matched_kws = find_matched_keywords(title, short_desc, keywords, source_kw=source_kw)
         contact_info = extract_contacts_from_vacancy(item, short_desc)
 
         detailed_vacancies.append(
@@ -840,10 +1033,12 @@ def _parse_linkedin_guest_html(html_text: str, source_kw: str) -> list[dict[str,
 
 
 def search_linkedin_jobs(
+    keywords: list[str],
     seen_jobs: set[str],
+    stop_event: threading.Event,
     max_results: int = MAX_LINKEDIN_JOBS_PER_SCAN,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if STOP_SCAN_EVENT.is_set():
+    if stop_event.is_set():
         return [], {"unique_found": 0, "new_count": 0, "skipped_seen": 0, "errors": []}
 
     now_str = get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S")
@@ -857,8 +1052,9 @@ def search_linkedin_jobs(
     skipped_seen = 0
     li_errors: list[str] = []
 
-    for kw in LINKEDIN_SEARCH_KEYWORDS:
-        if STOP_SCAN_EVENT.is_set():
+    # Foydalanuvchining kalit so'zlaridan dastlabki 6 tasini LinkedIn'dan qidiramiz
+    for kw in keywords[:6]:
+        if stop_event.is_set():
             break
         params = {
             "keywords": kw,
@@ -869,7 +1065,6 @@ def search_linkedin_jobs(
             resp = session.get(LINKEDIN_GUEST_SEARCH_URL, params=params, timeout=15)
             if resp.status_code != 200:
                 err_msg = f"HTTP {resp.status_code} ({kw})"
-                print(f"  [!] [LinkedIn API] {err_msg}", flush=True)
                 if len(li_errors) < 2:
                     li_errors.append(err_msg)
                 continue
@@ -887,14 +1082,13 @@ def search_linkedin_jobs(
 
                 raw_new_cards.append(card)
         except Exception as exc:
-            print(f"  [!] [LinkedIn API] Xatolik ({kw}): {exc}", flush=True)
             if len(li_errors) < 2:
                 li_errors.append(str(exc)[:60])
         time.sleep(0.4)
 
     linkedin_vacancies: list[dict[str, Any]] = []
     for card in raw_new_cards[:max_results]:
-        if STOP_SCAN_EVENT.is_set():
+        if stop_event.is_set():
             break
         job_num = card.get("job_num", "")
         description_text = f"{card['title']} — {card['company']} ({card['location']})"
@@ -916,7 +1110,7 @@ def search_linkedin_jobs(
             time.sleep(0.25)
 
         contacts = extract_contacts_from_vacancy({}, description_text)
-        matched_kws = find_matched_keywords(card["title"], description_text, source_kw=card["source_kw"])
+        matched_kws = find_matched_keywords(card["title"], description_text, keywords, source_kw=card["source_kw"])
 
         linkedin_vacancies.append(
             {
@@ -937,11 +1131,6 @@ def search_linkedin_jobs(
             }
         )
 
-    print(
-        f"  [*] [LinkedIn Guest API] Yakunlandi: Jami {len(batch_ids)} ta e'lon topildi -> "
-        f"Yangisi: {len(linkedin_vacancies)} ta, Avval ko'rilgan: {skipped_seen} ta.",
-        flush=True,
-    )
     diag = {
         "unique_found": len(batch_ids),
         "new_count": len(linkedin_vacancies),
@@ -955,67 +1144,9 @@ def search_linkedin_jobs(
 # 9. GEMINI BATCH TAHLILI VA 429 QUOTA EXCEEDED HIMOYASI (TRY-EXCEPT)
 # =====================================================================
 
-def _call_gemini_with_fallback(
-    client: genai.Client,
-    prompt: str,
-    response_schema: Any = None,
-) -> Any:
-    """
-    Agar joriy model 429 (Quota Exceeded / RESOURCE_EXHAUSTED) yoki 404 bersa,
-    avtomatik ravishda zaxira Gemini modellarini sinab ko'radi.
-    Barcha modellar limitdan oshgan bo'lsa, xatolik qaytaradi va bot oddiy matn rejimiga o'tadi.
-    """
-    global ACTIVE_GEMINI_MODEL
-    models_to_try: list[str] = []
-    if ACTIVE_GEMINI_MODEL:
-        models_to_try.append(ACTIVE_GEMINI_MODEL)
-    for m in GEMINI_MODEL_CANDIDATES:
-        if m not in models_to_try:
-            models_to_try.append(m)
-
-    last_error: Exception | None = None
-
-    for model_name in models_to_try:
-        try:
-            cfg = (
-                types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=response_schema,
-                    temperature=0.2,
-                )
-                if response_schema
-                else types.GenerateContentConfig(temperature=0.3)
-            )
-            resp = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=cfg,
-            )
-            if ACTIVE_GEMINI_MODEL != model_name:
-                ACTIVE_GEMINI_MODEL = model_name
-                print(f"  [+] Faol Gemini modeli: {ACTIVE_GEMINI_MODEL}", flush=True)
-            return resp
-        except Exception as exc:
-            last_error = exc
-            err_str = str(exc)
-            # 429 (Quota Exceeded) yoki 404 yoki 503 bo'lsa, keyingi modelga o'tamiz
-            if any(code in err_str for code in ("429", "RESOURCE_EXHAUSTED", "Quota", "404", "NOT_FOUND", "503")):
-                ACTIVE_GEMINI_MODEL = None
-                continue
-            break
-
-    raise RuntimeError(f"{last_error}")
-
-
-def build_no_ai_simple_item(vac: dict[str, Any], resumes: dict[str, str]) -> dict[str, Any]:
-    """
-    Gemini API ishlamaganda yoki 429 limit tugaganda sun'iy intellekt tahlilisiz
-    oddiy ma'lumot strukturasini qaytaradi (`ai_failed = True`).
-    """
+def build_no_ai_simple_item(vac: dict[str, Any], default_lang: str = "ru") -> dict[str, Any]:
     combined = f"{vac.get('title', '')} {vac.get('description', '')}"
-    lang = detect_language_fast(combined)
-    if lang not in resumes:
-        lang = next(iter(resumes.keys()))  # type: ignore[assignment]
+    lang = detect_language_fast(combined) or default_lang
     return {
         "detected_language": lang,
         "match_score": 0,
@@ -1028,13 +1159,11 @@ def build_no_ai_simple_item(vac: dict[str, Any], resumes: dict[str, str]) -> dic
 def analyze_vacancies_batch_with_gemini(
     client: genai.Client,
     batch: list[dict[str, Any]],
-    resumes: dict[str, str],
+    resume_text: str,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
     """
-    5 ta vakansiyani bitta guruh (batch) qilib Gemini'ga yuboradi.
-    Qaytaradi: (results_map, ai_quota_failed)
-    Agar Gemini API 429 Quota Exceeded yoki xatolik bersa, bot to'xtab qolmaydi —
-    `ai_quota_failed = True` qaytaradi va vakansiyalar AI tahlilisiz oddiy matn ko'rinishida yuboriladi!
+    5 ta vakansiyani foydalanuvchining shaxsiy PDF rezyumesi matni bilan solishtiradi.
+    Agar Gemini 429 Quota Exceeded bersa, ai_failed = True qaytaradi va bot to'xtab qolmaydi.
     """
     if not batch:
         return {}, False
@@ -1049,18 +1178,15 @@ def analyze_vacancies_batch_with_gemini(
             f"Qisqa matn: {str(vac.get('description') or '')[:500]}\n"
         )
 
-    resume_sample = (resumes.get("ru") or resumes.get("uz") or resumes.get("en") or "")[:1800]
-
     prompt = f"""
-Siz energetika va muhandislik vakansiyalari ekspertisiz. Quyidagi {len(batch)} ta vakansiyani nomzod profili bilan solishtirib, har biri uchun QISQA baho bering.
+Siz professional HR va karyera maslahatchisisiz. Quyidagi {len(batch)} ta vakansiyani foydalanuvchi rezyumesi bilan solishtirib, har biri uchun QISQA baho bering.
 
 QAT'IY QOIDALAR:
-1. Nomzod Junior (yangi bitiruvchi), ammo oliy muhandislik ma'lumotiga ega, **AutoCAD** (elektr chizmalar, ЭОМ, ПТО) va **MS Office** ni mukammal biladi.
-2. Vakansiyadagi ish staji ("1-3 yil", "3-6 yil") talabi ballni (`match_score`) UMUMAN TUSHIRMASIN!
-3. `short_summary` JUDA QISQA bo'lsin (maksimal 1-2 gap: asosiy vazifa va nega mosligi).
+1. Vakansiyadagi ish staji ("1-3 yil", "3-6 yil") talabi ballni (`match_score`) tushirmasin.
+2. `short_summary` JUDA QISQA bo'lsin (maksimal 1-2 gap: asosiy vazifa va nega mosligi).
 
-NOMZOD QISQA PROFILI:
-{resume_sample}
+FOYDALANUVCHI REZYUMESI:
+{resume_text[:2500]}
 
 VAKANSIYALAR RO'YXATI:
 {chr(10).join(vacancies_block)}
@@ -1082,9 +1208,8 @@ VAKANSIYALAR RO'YXATI:
             parsed_list = [BatchVacancyItemEvaluation(**x) for x in raw_data.get("items", [])]
 
         for item_ev in parsed_list:
-            lang = item_ev.detected_language if item_ev.detected_language in resumes else next(iter(resumes.keys()))
             results_map[item_ev.vacancy_id] = {
-                "detected_language": lang,
+                "detected_language": item_ev.detected_language,
                 "match_score": item_ev.match_score,
                 "contact_details": item_ev.contact_details,
                 "short_summary": item_ev.short_summary,
@@ -1093,7 +1218,7 @@ VAKANSIYALAR RO'YXATI:
     except Exception as exc:
         ai_failed = True
         print(
-            f"  [!] Gemini API limiti tugadi yoki xatolik yuz berdi ({str(exc)[:120]}) -> "
+            f"  [!] Gemini API limiti tugadi yoki xatolik ({str(exc)[:100]}) -> "
             "Vakansiyalar AI tahlilisiz oddiy matn ko'rinishida yuboriladi!",
             flush=True,
         )
@@ -1101,7 +1226,7 @@ VAKANSIYALAR RO'YXATI:
     for vac in batch:
         vid = vac["id"]
         if vid not in results_map:
-            results_map[vid] = build_no_ai_simple_item(vac, resumes)
+            results_map[vid] = build_no_ai_simple_item(vac)
         else:
             api_contacts = str(vac.get("contacts") or "").strip()
             if api_contacts and api_contacts not in results_map[vid]["contact_details"]:
@@ -1113,20 +1238,14 @@ VAKANSIYALAR RO'YXATI:
 def generate_cover_letter_on_demand(
     client: genai.Client,
     record: dict[str, Any],
-    resumes: dict[str, str],
+    user_profile: dict[str, Any],
 ) -> tuple[str, bool]:
-    """
-    [ ✍️ Kover-xat yozish ] tugmasi bosilganda ishlaydi.
-    Agar Gemini API limiti tugagan bo'lsa ham try-except orqali tayyor shablon Kover-xat qaytaradi.
-    Qaytaradi: (cover_letter_text, used_ai)
-    """
     vac = record["vacancy"]
-    lang = record.get("resume_lang", "ru")
-    resume_text = resumes.get(lang) or next(iter(resumes.values()))
+    lang = record.get("resume_lang") or user_profile.get("resume_lang") or "ru"
+    resume_text = user_profile.get("resume_text") or ""
 
     prompt = f"""
 Quyidagi vakansiya uchun nomzod nomidan AYNAN '{lang.upper()}' tilida qisqa, professional va yuborishga tayyor Cover Letter (ilova xati) yozib bering.
-Nomzod energetika/muhandislik bo'yicha oliy ma'lumotli, AutoCAD (chizmalar, elektr sxemalar, ЭОМ, ПТО) va MS Office dasturlarini mukammal biladi.
 Faqat tayyor xat matnini qaytaring (ortiqcha izohsiz).
 
 Vakansiya: {vac.get('title')}
@@ -1134,7 +1253,7 @@ Kompaniya: {vac.get('company')}
 Tavsif: {vac.get('description', '')[:2000]}
 
 Nomzod rezyumesi:
-{resume_text[:3500]}
+{resume_text[:4000]}
 """.strip()
 
     try:
@@ -1145,70 +1264,59 @@ Nomzod rezyumesi:
     except Exception as exc:
         print(f"[!] Kover-xatda AI limiti tugagan ({str(exc)[:100]}) — tayyor shablon ishlatildi.", flush=True)
 
-    # AI limiti tugaganda ishlatiladigan tayyor shablon Kover-xat
-    title = vac.get("title", "Инженер-энергетик")
+    title = vac.get("title", "Мутахассис")
     company = vac.get("company", "Компания")
     if lang == "uz":
         return (
             f"Assalomu alaykum, {company} jamoasi!\n\n"
             f"Sizning «{title}» vakansiyangiz bo'yicha murojaat qilmoqdaman. "
-            "Energetika va elektrotexnika yo'nalishida oliy ma'lumotga egaman, AutoCAD (elektr sxemalar, chizmalar) "
-            "hamda MS Office dasturlarini mukammal bilaman.\n\n"
-            f"Rezyumeimni (rezyume_{lang}.pdf) ilova qilmoqdaman. Suhbatga tayyorman!",
+            "Mening bilim va ko'nikmalarim ushbu lavozim talablariga mos keladi.\n\n"
+            "Rezyumeimni ilova qilmoqdaman. Suhbatga tayyorman!",
             False,
         )
     if lang == "en":
         return (
             f"Dear Hiring Team at {company},\n\n"
-            f"I am writing to apply for the {title} role. I hold a degree in Electrical & Power Engineering "
-            "and have strong proficiency in AutoCAD (electrical schematics, layouts) and MS Office.\n\n"
-            "Thank you for your time and consideration.",
+            f"I am writing to apply for the {title} role. My background and technical skills "
+            "align well with the requirements of this position.\n\n"
+            "Please find my resume attached. Thank you for your time and consideration.",
             False,
         )
     return (
         f"Здравствуйте, уважаемая команда {company}!\n\n"
-        f"Прошу рассмотреть мою кандидатуру на вакансию «{title}». Имею профильное инженерно-энергетическое образование, "
-        "отлично владею AutoCAD (однолинейные схемы, чертежи ЭОМ, электроснабжение, ПТО) и MS Office.\n\n"
+        f"Прошу рассмотреть мою кандидатуру на вакансию «{title}». Мое профильное образование "
+        "и профессиональные навыки соответствуют требованиям данной позиции.\n\n"
         "Буду рад обсудить сотрудничество на собеседовании!",
         False,
     )
 
 
 # =====================================================================
-# 10. HOLATNI SAQLASH (STATE) VA TELEGRAM XABAR FORMATLARI
+# 10. TELEGRAM KLAVIATURALARI VA XABAR FORMATLARI
 # =====================================================================
-
-def load_state() -> dict[str, dict[str, Any]]:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    if not STATE_FILE.exists():
-        return {}
-    try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def save_state(state: dict[str, dict[str, Any]]) -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    with STATE_LOCK:
-        try:
-            STATE_FILE.write_text(
-                json.dumps(state, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            print(f"[OGOHLANTIRISH] Holat faylini saqlashda xatolik: {exc}", flush=True)
-
 
 def build_main_reply_keyboard() -> ReplyKeyboardMarkup:
     markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True, row_width=2)
-    btn_now = KeyboardButton(BTN_SEARCH_NOW)
-    btn_clear = KeyboardButton(BTN_CLEAR_SEEN)
-    btn_stop = KeyboardButton(BTN_STOP_SEARCH)
-    btn_resume = KeyboardButton(BTN_RESUME_SCHEDULE)
-    markup.add(btn_now, btn_clear)
-    markup.add(btn_stop, btn_resume)
+    markup.add(KeyboardButton(BTN_SEARCH_NOW), KeyboardButton(BTN_UPLOAD_RESUME))
+    markup.add(KeyboardButton(BTN_MY_KEYWORDS), KeyboardButton(BTN_CLEAR_SEEN))
+    markup.add(KeyboardButton(BTN_STOP_SEARCH), KeyboardButton(BTN_RESUME_SCHEDULE))
     return markup
+
+
+def build_keyword_confirm_inline_keyboard() -> InlineKeyboardMarkup:
+    """Rezyumedan kalit so'zlar aniqlanganda chiqadigan tasdiqlash yoki qo'shish tugmalari."""
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton(
+            text="🔍 Shular bo‘yicha qidirish",
+            callback_data="kw_action|confirm",
+        ),
+        InlineKeyboardButton(
+            text="➕ Boshqa kalit so‘z qo‘shish",
+            callback_data="kw_action|add",
+        ),
+    )
+    return kb
 
 
 def build_vacancy_inline_keyboard(vac_id: str) -> InlineKeyboardMarkup:
@@ -1231,20 +1339,14 @@ def format_plain_no_ai_vacancy_message(
     cover_letter_text: str | None = None,
     status_note: str | None = None,
 ) -> str:
-    """
-    Gemini API limiti tugaganda (429 Quota Exceeded) sun'iy intellekt tahlilisiz,
-    shunchaki kompaniya nomi, vakansiya sarlavhasi va havolasini oddiy matn ko'rinishida chiqaradi.
-    """
     vac = record["vacancy"]
     lang = record.get("resume_lang", "ru")
     source_tag = vac.get("source", "[hh.uz]")
-    resume_filename = f"rezyume_{lang}.pdf"
 
     msg = (
         f"📌 <b>{html.escape(str(vac.get('title', '')))}</b>  <code>{html.escape(source_tag)}</code>\n"
         f"🏢 <b>Kompaniya:</b> {html.escape(str(vac.get('company', '')))}\n"
         f"📍 <b>Hudud:</b> {html.escape(str(vac.get('location', '')))} | 💰 {html.escape(str(vac.get('salary', '')))}\n"
-        f"📄 <b>Rezyume:</b> <code>{resume_filename}</code>\n"
         f"🔗 <b>Havola:</b> {html.escape(str(vac.get('url', '')))}"
     )
 
@@ -1265,10 +1367,6 @@ def format_short_vacancy_message(
     cover_letter_text: str | None = None,
     status_note: str | None = None,
 ) -> str:
-    """
-    Agar AI ishlagan bo'lsa qisqa tahlilli formatda, agar AI limiti tugagan bo'lsa (`ai_failed=True`)
-    sun'iy intellekt tahlilisiz oddiy matn ko'rinishida qaytaradi.
-    """
     ev = record.get("evaluation") or {}
     if ev.get("ai_failed"):
         return format_plain_no_ai_vacancy_message(
@@ -1278,10 +1376,9 @@ def format_short_vacancy_message(
         )
 
     vac = record["vacancy"]
-    lang = record["resume_lang"]
+    lang = record.get("resume_lang", "ru")
     score = int(ev.get("match_score", 75))
     source_tag = vac.get("source", "[hh.uz]")
-    resume_filename = f"rezyume_{lang}.pdf"
     contacts = (ev.get("contact_details") or vac.get("contacts") or "").strip() or "Havola orqali"
     short_summary = (ev.get("short_summary") or "").strip()
     pub_date = vac.get("published_at") or "Yangi"
@@ -1294,7 +1391,6 @@ def format_short_vacancy_message(
         f"💼 <b>{html.escape(str(vac.get('title', '')))}</b>\n"
         f"📍 {html.escape(str(vac.get('location', '')))} | 💰 {html.escape(str(vac.get('salary', '')))} | 📅 {html.escape(str(pub_date))}\n"
         f"☎️ <b>Aloqa:</b> {html.escape(contacts[:120])}\n"
-        f"📄 <b>Rezyume:</b> <code>{resume_filename}</code>\n"
         f"🔗 <a href=\"{html.escape(str(vac.get('url', '')))}\">Vakansiyani ochish</a>\n\n"
         f"💡 {html.escape(short_summary[:240])}"
     )
@@ -1315,22 +1411,29 @@ def format_short_vacancy_message(
 
 
 # =====================================================================
-# 11. YAGONA QIDIRUV VA 429 XATOLIKDAN HIMOYALANGAN YUBORISH JARAYONI
+# 11. HAR BIR FOYDALANUVCHI UCHUN PARALLEL QIDIRUV FUNKSIYASI
 # =====================================================================
 
-def run_single_scan(
+def run_user_scan(
     bot: telebot.TeleBot,
-    config: dict[str, str],
     client: genai.Client,
-    resumes: dict[str, str],
+    user_id: str | int,
     notify_start_and_finish: bool = True,
-    trigger_label: str = "Jadval bo'yicha",
+    trigger_label: str = "Qo‘lda qidiruv",
 ) -> None:
-    if not SCAN_LOCK.acquire(blocking=False):
+    """
+    Muayyan foydalanuvchi (`user_id`) uchun uning shaxsiy kalit so'zlari va rezyumesi
+    asosida parallel ravishda (boshqa foydalanuvchilarni bloklamasdan) vakansiya qidiradi.
+    """
+    uid = str(user_id).strip()
+    scan_lock = get_user_scan_lock(uid)
+    stop_event = get_user_stop_event(uid)
+
+    if not scan_lock.acquire(blocking=False):
         try:
             bot.send_message(
-                chat_id=config["TELEGRAM_CHAT_ID"],
-                text="⏳ <b>Qidiruv allaqachon bajarilmoqda...</b> Iltimos, yakunlanishini kuting.",
+                chat_id=uid,
+                text="⏳ <b>Siz uchun qidiruv allaqachon bajarilmoqda...</b> Iltimos, yakunlanishini kuting.",
                 parse_mode="HTML",
                 reply_markup=build_main_reply_keyboard(),
             )
@@ -1338,56 +1441,74 @@ def run_single_scan(
             pass
         return
 
-    STOP_SCAN_EVENT.clear()
-    chat_id = config["TELEGRAM_CHAT_ID"]
+    stop_event.clear()
 
     try:
-        seen_jobs = load_seen_jobs()
-        if notify_start_and_finish:
+        profile = load_user_profile(uid)
+        if not profile.get("has_resume") or not profile.get("resume_text"):
             try:
                 bot.send_message(
-                    chat_id=chat_id,
+                    chat_id=uid,
+                    text=(
+                        "📄 <b>Iltimos, avval rezyumengizni PDF formatida yuboring!</b>\n\n"
+                        "Rezyumengizni shu chatga <code>.pdf</code> fayl sifatida tashlang — "
+                        "sun'iy intellekt uni o‘qib chiqib, sizga mos ish qidirish kalit so‘zlarini aniqlab beradi."
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=build_main_reply_keyboard(),
+                )
+            except Exception:
+                pass
+            return
+
+        user_keywords: list[str] = profile.get("keywords") or list(DEFAULT_FALLBACK_KEYWORDS)
+        resume_text: str = profile.get("resume_text") or ""
+        seen_jobs = load_user_seen_jobs(uid)
+        state = load_user_state(uid)
+
+        if notify_start_and_finish:
+            kws_preview = ", ".join(user_keywords[:8])
+            try:
+                bot.send_message(
+                    chat_id=uid,
                     text=(
                         f"🔍 <b>Qidiruv boshlandi...</b> ({html.escape(trigger_label)})\n"
-                        f"🕒 Toshkent vaqti: <code>{get_tashkent_now().strftime('%H:%M:%S')}</code>\n"
+                        f"🔑 <b>Kalit so‘zlaringiz:</b> <code>{html.escape(kws_preview)}</code>\n"
                         "⏳ <code>[hh.uz]</code> va <code>[LinkedIn]</code> dan oxirgi 30 kunlik yangi vakansiyalar olinmoqda..."
                     ),
                     parse_mode="HTML",
                     reply_markup=build_main_reply_keyboard(),
                 )
-            except Exception as exc:
-                print(f"[!] Boshlanish xabarini yuborishda xatolik: {exc}", flush=True)
+            except Exception:
+                pass
 
-        state = load_state()
-
-        # 1-yo'nalish: hh.uz
         try:
             hh_vacancies, hh_diag = fetch_new_hh_uz_vacancies(
-                HH_SEARCH_KEYWORDS,
+                user_keywords,
                 seen_jobs=seen_jobs,
+                stop_event=stop_event,
                 max_items=MAX_HH_VACANCIES_PER_SCAN,
             )
         except Exception as hh_exc:
-            print(f"[!] hh.uz qidiruv xatoligi: {hh_exc}", flush=True)
             hh_vacancies, hh_diag = [], {"unique_found": 0, "new_count": 0, "skipped_seen": 0, "errors": [str(hh_exc)]}
 
-        # 2-yo'nalish: LinkedIn (TEGILMADI)
         try:
             linkedin_vacancies, li_diag = search_linkedin_jobs(
+                user_keywords,
                 seen_jobs=seen_jobs,
+                stop_event=stop_event,
                 max_results=MAX_LINKEDIN_JOBS_PER_SCAN,
             )
         except Exception as li_exc:
-            print(f"[!] LinkedIn qidiruv xatoligi: {li_exc}", flush=True)
             linkedin_vacancies, li_diag = [], {"unique_found": 0, "new_count": 0, "skipped_seen": 0, "errors": [str(li_exc)]}
 
         all_new_vacancies = hh_vacancies + linkedin_vacancies
 
-        if STOP_SCAN_EVENT.is_set():
+        if stop_event.is_set():
             try:
                 bot.send_message(
-                    chat_id=chat_id,
-                    text="⏹️ <b>Qidiruv foydalanuvchi tomonidan to‘xtatildi.</b>",
+                    chat_id=uid,
+                    text="⏹️ <b>Qidiruv to‘xtatildi.</b>",
                     parse_mode="HTML",
                     reply_markup=build_main_reply_keyboard(),
                 )
@@ -1404,14 +1525,13 @@ def run_single_scan(
         )
 
         if not all_new_vacancies:
-            print("  [*] Yangi (ko'rilmagan) vakansiyalar topilmadi.", flush=True)
             if notify_start_and_finish:
                 hint = ""
                 if hh_diag["skipped_seen"] > 0 or li_diag["skipped_seen"] > 0:
                     hint = f"\n\n💡 <i>Avvalgi vakansiyalarni qayta olish uchun <b>[ {BTN_CLEAR_SEEN} ]</b> ni bosing.</i>"
                 try:
                     bot.send_message(
-                        chat_id=chat_id,
+                        chat_id=uid,
                         text=f"✅ <b>Qidiruv yakunlandi.</b>\n\n{diag_text}{hint}",
                         parse_mode="HTML",
                         reply_markup=build_main_reply_keyboard(),
@@ -1424,27 +1544,24 @@ def run_single_scan(
         ai_quota_exhausted = False
         quota_notice_sent = False
 
-        # Vakansiyalarni 5 tadan guruhlab tahlil qilamiz;
-        # Agar Gemini 429 Quota Exceeded bersa, darhol "AI limiti tugadi, lekin topilgan vakansiyalar:"
-        # deb xabar chiqarib, qolgan barcha vakansiyalarni AI tahlilisiz oddiy matnda yuboramiz!
         for start_idx in range(0, len(all_new_vacancies), GEMINI_BATCH_SIZE):
-            if STOP_SCAN_EVENT.is_set():
+            if stop_event.is_set():
                 break
 
             batch = all_new_vacancies[start_idx : start_idx + GEMINI_BATCH_SIZE]
 
             if not ai_quota_exhausted:
-                batch_evals, batch_failed = analyze_vacancies_batch_with_gemini(client, batch, resumes)
+                batch_evals, batch_failed = analyze_vacancies_batch_with_gemini(client, batch, resume_text)
                 if batch_failed:
                     ai_quota_exhausted = True
             else:
-                batch_evals = {vac["id"]: build_no_ai_simple_item(vac, resumes) for vac in batch}
+                batch_evals = {vac["id"]: build_no_ai_simple_item(vac) for vac in batch}
 
             if ai_quota_exhausted and not quota_notice_sent:
                 quota_notice_sent = True
                 try:
                     bot.send_message(
-                        chat_id=chat_id,
+                        chat_id=uid,
                         text="⚠️ <b>AI limiti tugadi, lekin topilgan vakansiyalar:</b>",
                         parse_mode="HTML",
                         reply_markup=build_main_reply_keyboard(),
@@ -1453,15 +1570,15 @@ def run_single_scan(
                     pass
 
             for vac in batch:
-                if STOP_SCAN_EVENT.is_set():
+                if stop_event.is_set():
                     break
 
                 vac_id = str(vac["id"]).strip()
                 if vac_id in seen_jobs:
                     continue
 
-                ev_data = batch_evals.get(vac_id) or build_no_ai_simple_item(vac, resumes)
-                resume_lang = ev_data.get("detected_language", "ru")
+                ev_data = batch_evals.get(vac_id) or build_no_ai_simple_item(vac)
+                resume_lang = ev_data.get("detected_language") or profile.get("resume_lang") or "ru"
 
                 record: dict[str, Any] = {
                     "vacancy": vac,
@@ -1476,7 +1593,7 @@ def run_single_scan(
 
                 try:
                     sent_msg = bot.send_message(
-                        chat_id=chat_id,
+                        chat_id=uid,
                         text=tg_text,
                         parse_mode="HTML",
                         reply_markup=keyboard,
@@ -1484,21 +1601,21 @@ def run_single_scan(
                     )
                     record["telegram_message_id"] = sent_msg.message_id
                     state[vac_id] = record
-                    save_state(state)
-                    mark_job_as_seen(vac_id)
+                    save_user_state(uid, state)
+                    mark_user_job_as_seen(uid, vac_id)
                     seen_jobs.add(vac_id)
                     sent_count += 1
                 except Exception as tg_exc:
-                    print(f"     [!] Telegramga yuborishda xatolik ({vac_id}): {tg_exc}", flush=True)
+                    print(f"     [!] User {uid} ga yuborishda xatolik ({vac_id}): {tg_exc}", flush=True)
 
-                time.sleep(0.35)
+                time.sleep(0.3)
 
         if notify_start_and_finish:
-            stopped_note = " (To‘xtatildi ⏹️)" if STOP_SCAN_EVENT.is_set() else ""
+            stopped_note = " (To‘xtatildi ⏹️)" if stop_event.is_set() else ""
             mode_note = " (AI tahlilisiz oddiy rejimda)" if ai_quota_exhausted else ""
             try:
                 bot.send_message(
-                    chat_id=chat_id,
+                    chat_id=uid,
                     text=(
                         f"✅ <b>Qidiruv yakunlandi!{stopped_note}</b>\n"
                         f"Jami yuborildi: <b>{sent_count}</b> ta yangi vakansiya{mode_note}."
@@ -1510,50 +1627,42 @@ def run_single_scan(
                 pass
 
     except Exception as unexpected_exc:
-        print(f"\n[!] Qidiruv jarayonida kutilmagan xatolik: {unexpected_exc}", flush=True)
-        try:
-            bot.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ Qidiruv jarayonida xatolik yuz berdi, lekin bot ishlashda davom etmoqda: {html.escape(str(unexpected_exc)[:200])}",
-                parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
-            )
-        except Exception:
-            pass
+        print(f"\n[!] User {uid} qidiruvida xatolik: {unexpected_exc}", flush=True)
     finally:
-        SCAN_LOCK.release()
+        scan_lock.release()
 
 
 # =====================================================================
-# 12. O'ZBEKISTON VAQTI BILAN (UTC+5: 09:00 va 19:00) REJALASHTIRUVCHI
+# 12. O'ZBEKISTON VAQTI BILAN (UTC+5: 09:00 va 19:00) BARCHA USERLAR UCHUN JADVAL
 # =====================================================================
 
 def setup_daily_schedule(
     bot: telebot.TeleBot,
-    config: dict[str, str],
     client: genai.Client,
-    resumes: dict[str, str],
 ) -> None:
-    def scheduled_job(slot_time: str) -> None:
-        if not AUTO_SCHEDULE_ENABLED:
-            return
-        threading.Thread(
-            target=run_single_scan,
-            args=(bot, config, client, resumes, True, f"Avtomatik jadval ({slot_time} UZT)"),
-            daemon=True,
-        ).start()
+    def scheduled_job_all_users(slot_time: str) -> None:
+        user_ids = list_all_active_user_ids()
+        for uid in user_ids:
+            prof = load_user_profile(uid)
+            if not prof.get("has_resume") or not prof.get("auto_schedule_enabled", True):
+                continue
+            threading.Thread(
+                target=run_user_scan,
+                args=(bot, client, uid, True, f"Avtomatik jadval ({slot_time} UZT)"),
+                daemon=True,
+            ).start()
 
     schedule.clear()
     for t_str in SCHEDULE_TIMES_UZT:
         try:
-            schedule.every().day.at(t_str, "Asia/Tashkent").do(scheduled_job, slot_time=t_str)
+            schedule.every().day.at(t_str, "Asia/Tashkent").do(scheduled_job_all_users, slot_time=t_str)
         except Exception:
             uz_h, uz_m = map(int, t_str.split(":"))
             now_uz = get_tashkent_now()
             target_uz = now_uz.replace(hour=uz_h, minute=uz_m, second=0, microsecond=0)
             target_local = target_uz.astimezone()
             local_time_str = target_local.strftime("%H:%M")
-            schedule.every().day.at(local_time_str).do(scheduled_job, slot_time=t_str)
+            schedule.every().day.at(local_time_str).do(scheduled_job_all_users, slot_time=t_str)
 
 
 def schedule_runner_loop() -> None:
@@ -1566,44 +1675,223 @@ def schedule_runner_loop() -> None:
 
 
 # =====================================================================
-# 13. TELEGRAM BOT BOSHQARUVI (BARCHA TUGMALAR TRY-EXCEPT HIMOYASIDA)
+# 13. TELEGRAM BOT MULTI-USER HANDLERLARI (NON-BLOCKING)
 # =====================================================================
+
+def _process_uploaded_pdf_in_thread(
+    bot: telebot.TeleBot,
+    client: genai.Client,
+    message: Message,
+) -> None:
+    """
+    Yangi foydalanuvchi yuborgan PDF rezyumeni alohida oqimda (boshqa odamlarni kutdirmasdan)
+    yuklab oladi, matnini ajratadi va Gemini orqali kalit so'zlarni taxmin qilib so'raydi.
+    """
+    uid = str(message.chat.id)
+    doc = message.document
+    if not doc:
+        return
+
+    file_name = (doc.file_name or "rezyume.pdf").strip()
+    is_pdf = file_name.lower().endswith(".pdf") or (doc.mime_type or "").lower() == "application/pdf"
+
+    if not is_pdf:
+        bot.reply_to(
+            message,
+            "⚠️ <b>Iltimos, rezyumengizni faqat PDF (.pdf) formatida yuboring!</b>\n"
+            "Bu botga faylni o‘qish va sizga mos vakansiyalarni aniq tahlil qilish imkonini beradi.",
+            parse_mode="HTML",
+            reply_markup=build_main_reply_keyboard(),
+        )
+        return
+
+    wait_msg = bot.reply_to(
+        message,
+        "⏳ <b>Rezyumengiz qabul qilindi!</b>\nMatn o‘qilmoqda va sizga mos kalit so‘zlar aniqlanmoqda...",
+        parse_mode="HTML",
+    )
+
+    try:
+        file_info = bot.get_file(doc.file_id)
+        pdf_bytes = bot.download_file(file_info.file_path)
+
+        # Foydalanuvchining shaxsiy papkasiga PDF faylni saqlaymiz
+        user_pdf_path = get_user_dir(uid) / "resume.pdf"
+        user_pdf_path.write_bytes(pdf_bytes)
+
+        resume_text = extract_text_from_pdf_bytes(pdf_bytes)
+        if not resume_text or len(resume_text.strip()) < 20:
+            bot.edit_message_text(
+                chat_id=uid,
+                message_id=wait_msg.message_id,
+                text=(
+                    "⚠️ <b>Ushbu PDF fayldan matn o‘qib bo‘lmadi (skanerlangan rasm bo‘lishi mumkin).</b>\n"
+                    "Iltimos, matni nusxalanadigan (text-based) PDF rezyume yuboring."
+                ),
+                parse_mode="HTML",
+            )
+            return
+
+        keywords, profession, detected_lang = extract_keywords_from_resume_with_gemini(client, resume_text)
+
+        profile = load_user_profile(uid)
+        profile["has_resume"] = True
+        profile["resume_filename"] = file_name
+        profile["resume_text"] = resume_text
+        profile["resume_lang"] = detected_lang
+        profile["profession"] = profession
+        profile["keywords"] = keywords
+        profile["awaiting_extra_keywords"] = True
+        save_user_profile(uid, profile)
+
+        kws_formatted = "\n".join(f"• <code>{html.escape(k)}</code>" for k in keywords)
+        reply_text = (
+            f"✅ <b>Rezyumengiz muvaffaqiyatli o‘qildi!</b> ({html.escape(file_name)})\n"
+            f"👨‍💼 <b>Yo‘nalish:</b> {html.escape(profession)}\n\n"
+            f"🔑 <b>Sizning rezyumengiz asosida quyidagi kalit so‘zlar aniqlandi:</b>\n"
+            f"{kws_formatted}\n\n"
+            "❓ <b>Shular bo‘yicha qidiraylikmi yoki yana boshqa kalit so‘z qo‘shasizmi?</b>\n"
+            "<i>(Quyidagi tugmani bosing yoki qo‘shimcha kalit so‘zlaringizni vergul bilan yozib yuboring)</i>"
+        )
+
+        bot.edit_message_text(
+            chat_id=uid,
+            message_id=wait_msg.message_id,
+            text=reply_text,
+            parse_mode="HTML",
+            reply_markup=build_keyword_confirm_inline_keyboard(),
+        )
+        print(f"[USER {uid}] PDF rezyume yuklandi ({file_name}) -> {len(keywords)} ta kalit so'z aniqlandi.", flush=True)
+
+    except Exception as exc:
+        print(f"[!] User {uid} PDF qayta ishlashda xatolik: {exc}", flush=True)
+        try:
+            bot.edit_message_text(
+                chat_id=uid,
+                message_id=wait_msg.message_id,
+                text=f"⚠️ Faylni o‘qishda xatolik yuz berdi: {html.escape(str(exc)[:150])}. Iltimos, qaytadan PDF yuboring.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
 
 def register_bot_handlers(
     bot: telebot.TeleBot,
-    config: dict[str, str],
     client: genai.Client,
-    resumes: dict[str, str],
 ) -> None:
 
     @bot.message_handler(commands=["start", "help"])
     def handle_start(message: Message) -> None:
         try:
-            seen_count = len(load_seen_jobs())
-            sched_status = "Faol ✅ (09:00 va 19:00 UZT)" if AUTO_SCHEDULE_ENABLED else "Vaqtincha to‘xtatilgan ⏸️"
-            help_text = (
-                "🤖 <b>Energetika va Muhandislik Vakansiyalari AI Agenti</b>\n\n"
-                f"• <b>Manbalar:</b> <code>[hh.uz]</code> + <code>[LinkedIn]</code>\n"
-                f"• <b>AI Himoyasi:</b> Gemini limiti tugasa ham (429), vakansiyalar oddiy matn ko‘rinishida to‘xtovsiz keladi ✅\n"
-                f"• <b>Jadval:</b> {sched_status} | <b>Tarix:</b> {seen_count} ta"
-            )
+            uid = str(message.chat.id)
+            profile = load_user_profile(uid)
+            first_name = html.escape(message.from_user.first_name if message.from_user else "Foydalanuvchi")
+
+            if profile.get("has_resume") and profile.get("keywords"):
+                kws_str = ", ".join(profile["keywords"][:8])
+                text = (
+                    f"👋 Assalomu alaykum, <b>{first_name}</b>!\n\n"
+                    f"📄 <b>Yuklangan rezyumengiz:</b> <code>{html.escape(profile.get('resume_filename', 'resume.pdf'))}</code>\n"
+                    f"🔑 <b>Faol kalit so‘zlaringiz:</b> <code>{html.escape(kws_str)}</code>\n\n"
+                    "• Vakansiyalarni qidirish uchun <b>[ 🔍 Hozir qidirish ]</b> tugmasini bosing.\n"
+                    "• Yangi rezyume yuklash uchun <b>PDF (.pdf)</b> faylingizni shu chatga yuboring."
+                )
+            else:
+                text = (
+                    f"👋 Assalomu alaykum, <b>{first_name}</b>! Shaxsiy AI Ish Qidirish Botiga xush kelibsiz.\n\n"
+                    "📄 <b>Iltimos, rezyumengizni PDF formatida yuboring.</b>\n\n"
+                    "Rezyumengizni faqat <code>.pdf</code> formatida yuklaganingizdan so‘ng, "
+                    "Gemini sun'iy intellekti uni o‘qib chiqib, sizga mos ish qidirish kalit so‘zlarini avtomatik aniqlab beradi "
+                    "va <code>hh.uz</code> hamda <code>LinkedIn</code> dan mos vakansiyalarni topib keladi."
+                )
+
             bot.send_message(
-                chat_id=message.chat.id,
-                text=help_text,
+                chat_id=uid,
+                text=text,
                 parse_mode="HTML",
                 reply_markup=build_main_reply_keyboard(),
             )
         except Exception as exc:
-            print(f"[!] /start javobida xatolik: {exc}", flush=True)
+            print(f"[!] /start xatoligi: {exc}", flush=True)
+
+    @bot.message_handler(content_types=["document"])
+    def handle_document(message: Message) -> None:
+        """Har qanday foydalanuvchi fayl yuborganda uni parallel oqimda tekshiradi (faqat PDF qabul qiladi)."""
+        threading.Thread(
+            target=_process_uploaded_pdf_in_thread,
+            args=(bot, client, message),
+            daemon=True,
+        ).start()
+
+    @bot.message_handler(content_types=["photo", "audio", "video", "voice"])
+    def handle_non_pdf_media(message: Message) -> None:
+        try:
+            bot.reply_to(
+                message,
+                "⚠️ <b>Iltimos, rezyumengizni faqat PDF (.pdf) formatida yuboring!</b>\n"
+                "Rasm yoki boshqa formatlar qabul qilinmaydi.",
+                parse_mode="HTML",
+                reply_markup=build_main_reply_keyboard(),
+            )
+        except Exception:
+            pass
+
+    @bot.message_handler(func=lambda m: "Rezyume yuklash" in (m.text or ""))
+    def handle_upload_resume_btn(message: Message) -> None:
+        try:
+            bot.send_message(
+                chat_id=message.chat.id,
+                text=(
+                    "📄 <b>Iltimos, rezyumengizni PDF formatida yuboring.</b>\n\n"
+                    "Pastdagi 📎 (skrepka) tugmasini bosib, kompyuter yoki telefoningizdan "
+                    "<code>.pdf</code> formatdagi rezyume faylingizni yuboring."
+                ),
+                parse_mode="HTML",
+                reply_markup=build_main_reply_keyboard(),
+            )
+        except Exception:
+            pass
+
+    @bot.message_handler(func=lambda m: "Kalit so‘zlarim" in (m.text or "") or "Kalit so'zlarim" in (m.text or ""))
+    def handle_my_keywords_btn(message: Message) -> None:
+        try:
+            uid = str(message.chat.id)
+            profile = load_user_profile(uid)
+            if not profile.get("has_resume"):
+                bot.send_message(
+                    chat_id=uid,
+                    text="📄 Iltimos, avval rezyumengizni PDF formatida yuboring.",
+                    parse_mode="HTML",
+                    reply_markup=build_main_reply_keyboard(),
+                )
+                return
+
+            kws = profile.get("keywords") or []
+            kws_formatted = "\n".join(f"• <code>{html.escape(k)}</code>" for k in kws) or "—"
+            profile["awaiting_extra_keywords"] = True
+            save_user_profile(uid, profile)
+
+            bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"🔑 <b>Sizning joriy qidiruv kalit so‘zlaringiz:</b>\n{kws_formatted}\n\n"
+                    "❓ Shular bo‘yicha qidiraylikmi yoki yana boshqa kalit so‘z qo‘shasizmi?\n"
+                    "<i>(Yangi kalit so‘z qo‘shish uchun ularni vergul bilan yozib yuboring)</i>"
+                ),
+                parse_mode="HTML",
+                reply_markup=build_keyword_confirm_inline_keyboard(),
+            )
+        except Exception as exc:
+            print(f"[!] Kalit so'zlarim tugmasida xatolik: {exc}", flush=True)
 
     @bot.message_handler(func=lambda m: "Hozir qidirish" in (m.text or "") or (m.text or "").strip() == "/scan")
     def handle_search_now(message: Message) -> None:
         try:
-            if str(message.chat.id) != str(config["TELEGRAM_CHAT_ID"]):
-                return
+            uid = str(message.chat.id)
             threading.Thread(
-                target=run_single_scan,
-                args=(bot, config, client, resumes, True, "Qo‘lda: 🔍 Hozir qidirish"),
+                target=run_user_scan,
+                args=(bot, client, uid, True, "Qo‘lda: 🔍 Hozir qidirish"),
                 daemon=True,
             ).start()
         except Exception as exc:
@@ -1612,15 +1900,14 @@ def register_bot_handlers(
     @bot.message_handler(func=lambda m: "Tarixni tozalash" in (m.text or "") or (m.text or "").strip() == "/clear")
     def handle_clear_seen(message: Message) -> None:
         try:
-            if str(message.chat.id) != str(config["TELEGRAM_CHAT_ID"]):
-                return
-            old_count = len(load_seen_jobs())
-            clear_seen_jobs()
+            uid = str(message.chat.id)
+            old_count = len(load_user_seen_jobs(uid))
+            clear_user_seen_jobs(uid)
             bot.send_message(
-                chat_id=message.chat.id,
+                chat_id=uid,
                 text=(
-                    f"🗑️ <b>Tarix tozalandi!</b> ({old_count} ta yozuv o‘chirildi).\n"
-                    f"Endi <b>[ {BTN_SEARCH_NOW} ]</b> ni bossangiz, oxirgi 30 kunlik vakansiyalar yangidan keladi."
+                    f"🗑️ <b>Sizning qidiruv tarixingiz tozalandi!</b> ({old_count} ta yozuv o‘chirildi).\n"
+                    f"Endi <b>[ {BTN_SEARCH_NOW} ]</b> ni bossangiz, barcha yangi vakansiyalar qaytadan keladi."
                 ),
                 parse_mode="HTML",
                 reply_markup=build_main_reply_keyboard(),
@@ -1630,14 +1917,14 @@ def register_bot_handlers(
 
     @bot.message_handler(func=lambda m: "Qidiruvni to" in (m.text or ""))
     def handle_stop_search(message: Message) -> None:
-        global AUTO_SCHEDULE_ENABLED
         try:
-            if str(message.chat.id) != str(config["TELEGRAM_CHAT_ID"]):
-                return
-            STOP_SCAN_EVENT.set()
-            AUTO_SCHEDULE_ENABLED = False
+            uid = str(message.chat.id)
+            get_user_stop_event(uid).set()
+            profile = load_user_profile(uid)
+            profile["auto_schedule_enabled"] = False
+            save_user_profile(uid, profile)
             bot.send_message(
-                chat_id=message.chat.id,
+                chat_id=uid,
                 text=(
                     "⏹️ <b>Qidiruv to‘xtatildi va avto-jadval pauza qilindi!</b>\n"
                     f"Qayta yoqish uchun <code>{BTN_RESUME_SCHEDULE}</code> tugmasini bosing."
@@ -1650,94 +1937,192 @@ def register_bot_handlers(
 
     @bot.message_handler(func=lambda m: "Qayta faollashtirish" in (m.text or ""))
     def handle_resume_schedule(message: Message) -> None:
-        global AUTO_SCHEDULE_ENABLED
         try:
-            if str(message.chat.id) != str(config["TELEGRAM_CHAT_ID"]):
-                return
-            STOP_SCAN_EVENT.clear()
-            AUTO_SCHEDULE_ENABLED = True
+            uid = str(message.chat.id)
+            get_user_stop_event(uid).clear()
+            profile = load_user_profile(uid)
+            profile["auto_schedule_enabled"] = True
+            save_user_profile(uid, profile)
             bot.send_message(
-                chat_id=message.chat.id,
-                text="▶️ <b>Avtomatik rejim (09:00 va 19:00 UZT) qayta faollashtirildi!</b>",
+                chat_id=uid,
+                text="▶️ <b>Avtomatik rejim (09:00 va 19:00 UZT) siz uchun qayta faollashtirildi!</b>",
                 parse_mode="HTML",
                 reply_markup=build_main_reply_keyboard(),
             )
         except Exception as exc:
             print(f"[!] Qayta faollashtirish tugmasida xatolik: {exc}", flush=True)
 
+    @bot.message_handler(content_types=["text"])
+    def handle_custom_keywords_input(message: Message) -> None:
+        """
+        Foydalanuvchi o'zidan yangi kalit so'zlar yozib yuborganda ularni qabul qiladi,
+        mavjud ro'yxatga qo'shadi va darhol o'sha kalit so'zlar bo'yicha qidiruvni boshlaydi.
+        """
+        try:
+            uid = str(message.chat.id)
+            raw_text = (message.text or "").strip()
+            if not raw_text or raw_text.startswith("/"):
+                return
+
+            profile = load_user_profile(uid)
+            if not profile.get("has_resume"):
+                bot.send_message(
+                    chat_id=uid,
+                    text="📄 <b>Iltimos, avval rezyumengizni PDF formatida yuboring.</b>",
+                    parse_mode="HTML",
+                    reply_markup=build_main_reply_keyboard(),
+                )
+                return
+
+            # Vergul, nuqtali vergul yoki yangi qator orqali yozilgan kalit so'zlarni ajratib olamiz
+            new_kws = [
+                k.strip()
+                for k in re.split(r"[,;\n]+", raw_text)
+                if k.strip() and len(k.strip()) >= 2
+            ]
+            if not new_kws:
+                return
+
+            existing_kws: list[str] = profile.get("keywords") or []
+            for nk in new_kws:
+                if nk.lower() not in [ek.lower() for ek in existing_kws]:
+                    existing_kws.append(nk)
+
+            profile["keywords"] = existing_kws
+            profile["awaiting_extra_keywords"] = False
+            save_user_profile(uid, profile)
+
+            kws_str = ", ".join(existing_kws)
+            bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"✅ <b>Yangi kalit so‘zlar qo‘shildi!</b>\n"
+                    f"🔑 <b>Yangilangan ro‘yxat:</b> <code>{html.escape(kws_str)}</code>\n\n"
+                    "🚀 Ushbu kalit so‘zlar asosida vakansiyalarni qidirish boshlanmoqda..."
+                ),
+                parse_mode="HTML",
+                reply_markup=build_main_reply_keyboard(),
+            )
+
+            threading.Thread(
+                target=run_user_scan,
+                args=(bot, client, uid, True, "Yangilangan kalit so‘zlar bo‘yicha"),
+                daemon=True,
+            ).start()
+        except Exception as exc:
+            print(f"[!] Kalit so'z qo'shishda xatolik: {exc}", flush=True)
+
     @bot.callback_query_handler(func=lambda call: True)
     def handle_callback(call: CallbackQuery) -> None:
         try:
+            uid = str(call.message.chat.id)
             data = call.data or ""
             if "|" not in data:
                 bot.answer_callback_query(call.id, "Noma'lum buyruq.")
                 return
 
-            action, vac_id = data.split("|", 1)
-            state = load_state()
-            record = state.get(vac_id)
+            action, param = data.split("|", 1)
 
-            if not record:
-                bot.answer_callback_query(call.id, "Vakansiya ma'lumotlari topilmadi.", show_alert=True)
-                return
+            # A) Kalit so'zlarni tasdiqlash yoki yangi kalit so'z qo'shish tugmalari
+            if action == "kw_action":
+                profile = load_user_profile(uid)
+                if param == "confirm":
+                    profile["awaiting_extra_keywords"] = False
+                    save_user_profile(uid, profile)
+                    bot.answer_callback_query(call.id, "Qidiruv boshlanmoqda! 🔍")
+                    threading.Thread(
+                        target=run_user_scan,
+                        args=(bot, client, uid, True, "Tasdiqlangan kalit so‘zlar bo‘yicha"),
+                        daemon=True,
+                    ).start()
+                    return
 
-            if action in ("write_cl", "view"):
-                bot.answer_callback_query(call.id, "✍️ Kover-xat tayyorlanmoqda...")
+                if param == "add":
+                    profile["awaiting_extra_keywords"] = True
+                    save_user_profile(uid, profile)
+                    bot.answer_callback_query(call.id, "Kalit so'zlarni yozing ✍️")
+                    bot.send_message(
+                        chat_id=uid,
+                        text=(
+                            "✍️ <b>Qo‘shmoqchi bo‘lgan yangi kalit so‘zlaringizni vergul bilan ajratib yozib yuboring:</b>\n"
+                            "<i>Masalan: Инженер ПТО, ЭОМ, Проектировщик, Electrical Engineer</i>"
+                        ),
+                        parse_mode="HTML",
+                        reply_markup=build_main_reply_keyboard(),
+                    )
+                    return
 
-                cover_letter = record.get("generated_cover_letter")
-                used_ai = True
-                if not cover_letter:
-                    cover_letter, used_ai = generate_cover_letter_on_demand(client, record, resumes)
-                    record["generated_cover_letter"] = cover_letter
-                    record["status"] = "cover_letter_generated"
+            # B) Vakansiya uchun Kover-xat yozish yoki O'tkazib yuborish (parallel oqimda)
+            vac_id = param
+
+            def _handle_vacancy_action() -> None:
+                state = load_user_state(uid)
+                record = state.get(vac_id)
+                if not record:
+                    bot.answer_callback_query(call.id, "Vakansiya ma'lumotlari topilmadi.", show_alert=True)
+                    return
+
+                if action in ("write_cl", "view"):
+                    bot.answer_callback_query(call.id, "✍️ Kover-xat tayyorlanmoqda...")
+                    user_profile = load_user_profile(uid)
+
+                    cover_letter = record.get("generated_cover_letter")
+                    used_ai = True
+                    if not cover_letter:
+                        cover_letter, used_ai = generate_cover_letter_on_demand(client, record, user_profile)
+                        record["generated_cover_letter"] = cover_letter
+                        record["status"] = "cover_letter_generated"
+                        record["updated_at"] = get_tashkent_now().isoformat(timespec="seconds")
+                        state[vac_id] = record
+                        save_user_state(uid, state)
+
+                    note = None if used_ai else "ℹ️ <i>AI limiti tugagani sababli tayyor shablon kover-xat qo‘yildi.</i>"
+                    updated_text = format_short_vacancy_message(
+                        record,
+                        cover_letter_text=cover_letter,
+                        status_note=note,
+                    )
+                    skip_only_kb = InlineKeyboardMarkup(row_width=1)
+                    skip_only_kb.add(
+                        InlineKeyboardButton(
+                            text="❌ Kerak emas",
+                            callback_data=f"skip|{vac_id}",
+                        )
+                    )
+                    bot.edit_message_text(
+                        chat_id=uid,
+                        message_id=call.message.message_id,
+                        text=updated_text,
+                        parse_mode="HTML",
+                        reply_markup=skip_only_kb,
+                        disable_web_page_preview=True,
+                    )
+                    return
+
+                if action == "skip":
+                    record["status"] = "dismissed_by_user"
                     record["updated_at"] = get_tashkent_now().isoformat(timespec="seconds")
                     state[vac_id] = record
-                    save_state(state)
+                    save_user_state(uid, state)
 
-                note = None if used_ai else "ℹ️ <i>AI limiti tugagani sababli tayyor shablon kover-xat qo‘yildi.</i>"
-                updated_text = format_short_vacancy_message(
-                    record,
-                    cover_letter_text=cover_letter,
-                    status_note=note,
-                )
-                skip_only_kb = InlineKeyboardMarkup(row_width=1)
-                skip_only_kb.add(
-                    InlineKeyboardButton(
-                        text="❌ Kerak emas",
-                        callback_data=f"skip|{vac_id}",
+                    dismissed_text = format_short_vacancy_message(
+                        record,
+                        status_note="❌ <b>Kerak emas deb belgilandi</b>",
                     )
-                )
-                bot.edit_message_text(
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.message_id,
-                    text=updated_text,
-                    parse_mode="HTML",
-                    reply_markup=skip_only_kb,
-                    disable_web_page_preview=True,
-                )
-                return
+                    bot.edit_message_text(
+                        chat_id=uid,
+                        message_id=call.message.message_id,
+                        text=dismissed_text,
+                        parse_mode="HTML",
+                        reply_markup=None,
+                        disable_web_page_preview=True,
+                    )
+                    bot.answer_callback_query(call.id, "O'tkazib yuborildi ❌")
 
-            if action == "skip":
-                record["status"] = "dismissed_by_user"
-                record["updated_at"] = get_tashkent_now().isoformat(timespec="seconds")
-                state[vac_id] = record
-                save_state(state)
+            threading.Thread(target=_handle_vacancy_action, daemon=True).start()
 
-                dismissed_text = format_short_vacancy_message(
-                    record,
-                    status_note="❌ <b>Kerak emas deb belgilandi</b>",
-                )
-                bot.edit_message_text(
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.message_id,
-                    text=dismissed_text,
-                    parse_mode="HTML",
-                    reply_markup=None,
-                    disable_web_page_preview=True,
-                )
-                bot.answer_callback_query(call.id, "O'tkazib yuborildi ❌")
         except Exception as exc:
-            print(f"[!] Tugmani qayta ishlashda xatolik: {exc}", flush=True)
+            print(f"[!] Callback xatoligi: {exc}", flush=True)
 
 
 # =====================================================================
@@ -1746,9 +2131,9 @@ def register_bot_handlers(
 
 def main() -> None:
     print("=" * 88, flush=True)
-    print(" O'ZBEKISTON ENERGETIKA VA MUHANDISLIK VAKANSIYALARI AI AGENTI (429 QUOTA SAFE)", flush=True)
+    print(" KO'P FOYDALANUVCHILI (MULTI-USER & NON-BLOCKING) AI ISH QIDIRISH BOTI", flush=True)
     print(f" Ishchi papka   : {BASE_DIR}", flush=True)
-    print(f" Tarix fayli    : {SEEN_JOBS_FILE}", flush=True)
+    print(f" Userlar bazasi : {USERS_DIR}", flush=True)
     print(f" Toshkent vaqti : {get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S (UTC+5)')}", flush=True)
     print("=" * 88, flush=True)
 
@@ -1756,33 +2141,34 @@ def main() -> None:
     start_health_check_server()
 
     config = get_config()
-    resumes = load_all_resumes()
-    seen_initial = load_seen_jobs()
-    print(f"  [+] seen_jobs.txt tekshirildi: bazada {len(seen_initial)} ta ko'rilgan vakansiya mavjud.", flush=True)
-
     client = genai.Client(api_key=config["GEMINI_API_KEY"])
-    bot = telebot.TeleBot(config["TELEGRAM_BOT_TOKEN"])
 
-    register_bot_handlers(bot, config, client, resumes)
-    setup_daily_schedule(bot, config, client, resumes)
+    # Ko'p foydalanuvchilar bir vaqtda yozganda qotib qolmasligi uchun threaded=True va num_threads=16
+    bot = telebot.TeleBot(config["TELEGRAM_BOT_TOKEN"], threaded=True, num_threads=16)
+
+    register_bot_handlers(bot, client)
+    setup_daily_schedule(bot, client)
 
     sched_thread = threading.Thread(target=schedule_runner_loop, daemon=True)
     sched_thread.start()
 
-    try:
-        bot.send_message(
-            chat_id=config["TELEGRAM_CHAT_ID"],
-            text=(
-                "✅ <b>AI Agent yangilandi (429 Quota Exceeded himoyasi bilan)!</b>\n\n"
-                "• Agar Gemini API kunlik limiti tugasa ham, bot to‘xtab qolmaydi.\n"
-                "• Limit tugaganda <i>«⚠️ AI limiti tugadi, lekin topilgan vakansiyalar:»</i> deb xabar berib, "
-                "barcha vakansiyalarni oddiy matn ko‘rinishida (nomi, kompaniya va havolasi bilan) yuboraveradi."
-            ),
-            parse_mode="HTML",
-            reply_markup=build_main_reply_keyboard(),
-        )
-    except Exception as exc:
-        print(f"  [!] Boshlang'ich Telegram xabarini yuborishda xatolik: {exc}", flush=True)
+    if config.get("ADMIN_CHAT_ID"):
+        try:
+            bot.send_message(
+                chat_id=config["ADMIN_CHAT_ID"],
+                text=(
+                    "✅ <b>Multi-User AI Ish Qidirish Boti ishga tushdi!</b>\n\n"
+                    "• Endi botdan istalgan foydalanuvchi parallel foydalana oladi.\n"
+                    "• Har bir foydalanuvchi o‘z rezyumesini <b>PDF formatda</b> yuboradi -> "
+                    "AI avtomatik kalit so‘zlarni aniqlab, tasdiqlatadi yoki yangi so‘zlar qo‘shdirib qidiruvni boshlaydi."
+                ),
+                parse_mode="HTML",
+                reply_markup=build_main_reply_keyboard(),
+            )
+        except Exception:
+            pass
+
+    print("\n[4/4] Multi-User Telegram Bot faol!", flush=True)
 
     while True:
         try:
