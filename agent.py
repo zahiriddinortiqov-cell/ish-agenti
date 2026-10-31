@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Ko'p Foydalanuvchili (Multi-User & Non-Blocking) AI Ish Qidirish Telegram Boti + Admin Paneli
-(Render.com 24/7 Ready)
+Ko'p Foydalanuvchili (Multi-User & Non-Blocking) 3-Tilli (UZ / RU / EN)
+AI Ish Qidirish Telegram Boti + Kengaytirilgan Admin Paneli (Render.com 24/7 Ready)
 
-Yangi qo'shilgan Admin va Limit tizimi:
-1. ADMIN_ID = int(os.getenv('ADMIN_ID', '608221268')) orqali adminni aniqlash.
-2. /admin buyrug'i:
-   - Faqat ADMIN_ID egasi uchun maxsus Admin Boshqaruv Menyusini ochadi.
-   - Begona foydalanuvchi yozsa: "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q" deb qaytaradi.
-3. Admin panel imkoniyatlari:
-   - 📊 Statistika: Jami ro'yxatdan o'tgan foydalanuvchilar, rezyume yuklaganlar va bugungi faol qidiruvlar soni.
-   - 🔔 Yangi foydalanuvchi bildirishnomasi: PDF rezyume yuklanganda adminga "Yangi foydalanuvchi qo'shildi: [Ism/ID]" boradi.
-   - 📢 Xabar yuborish (Broadcast): Barcha foydalanuvchilarga umumiy e'lon yuborish.
-   - 👤 Foydalanuvchini boshqarish: ID orqali bloklash (Ban / Unban) va qo'shimcha qidiruv limiti (+limit) berish.
-4. Kunlik qidiruv limiti:
-   - Oddiy foydalanuvchilar uchun kuniga maksimal 3 marta qidiruv (DAILY_SEARCH_LIMIT = 3).
-   - Admin (ADMIN_ID = 608221268) uchun qidiruv limiti cheksiz.
+Yangi qo'shilgan imkoniyatlar:
+1. Admindan alohida foydalanuvchiga xabar yuborish:
+   - Buyruq orqali: `/send USER_ID Xabar matni`
+   - Admin paneli tugmasi orqali: `[ ✉️ Foydalanuvchiga xabar ]`
+   - Xabar foydalanuvchining tanlagan tilida ('📩 Admindan xabar:' / '📩 Сообщение от администратора:' / '📩 Message from Admin:') boradi.
+2. To'liq 3 tilli tizim (TRANSLATIONS: uz, ru, en):
+   - Birinchi kirishda (/start) til tanlash inline tugmalari: 🇺🇿 O‘zbekcha | 🇷🇺 Русский | 🇬🇧 English
+   - Pastki klaviaturada (Reply Keyboard) va `/language` buyrug'i orqali istalgan payt tilni o'zgartirish.
+   - Barcha menyular, ogohlantirishlar, qidiruv natijalari, tahlil va Kover-xat foydalanuvchi tanlagan tilda ishlaydi.
 """
 
 from __future__ import annotations
@@ -63,7 +59,7 @@ from google.genai import types
 
 
 # =====================================================================
-# 1. SOZLAMALAR, ADMIN_ID, KUNLIK LIMIT VA VAQT MINTAQASI (UTC+5)
+# 1. SOZLAMALAR, ADMIN_ID VA VAQT MINTAQASI (UTC+5)
 # =====================================================================
 
 try:
@@ -87,11 +83,413 @@ USERS_DIR = BASE_DIR / "users"
 
 load_dotenv(dotenv_path=BASE_DIR / ".env")
 
-# Admin Telegram ID (Render Environment orqali olinadi)
+
 ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0").strip() or "0")
 
 # Oddiy foydalanuvchilar uchun kunlik qidiruv limiti (Admin uchun cheksiz)
 DAILY_SEARCH_LIMIT: int = 3
+
+
+# =====================================================================
+# 2. LOKALIZATSIYA LUG'ATI (TRANSLATIONS: UZ, RU, EN)
+# =====================================================================
+
+TRANSLATIONS: dict[str, dict[str, str]] = {
+    "uz": {
+        "btn_search_now": "🔍 Hozir qidirish",
+        "btn_upload_resume": "📄 Rezyume yuklash (PDF)",
+        "btn_my_keywords": "🔑 Kalit so‘zlarim",
+        "btn_clear_seen": "🗑️ Tarixni tozalash",
+        "btn_stop_search": "⏹️ Qidiruvni to‘xtatish",
+        "btn_resume_schedule": "▶️ Qayta faollashtirish",
+        "btn_change_lang": "🌐 Tilni o‘zgartirish",
+        "btn_write_cl": "✍️ Kover-xat yozish",
+        "btn_skip": "❌ Kerak emas",
+        "btn_kw_confirm": "🔍 Shular bo‘yicha qidirish",
+        "btn_kw_add": "➕ Boshqa kalit so‘z qo‘shish",
+        "choose_lang_prompt": (
+            "🇺🇿 <b>Iltimos, muloqot tilini tanlang:</b>\n"
+            "🇷🇺 <b>Пожалуйста, выберите язык интерфейса:</b>\n"
+            "🇬🇧 <b>Please select your preferred language:</b>"
+        ),
+        "lang_saved": "✅ <b>O‘zbek tili tanlandi!</b>",
+        "welcome_no_resume": (
+            "👋 Assalomu alaykum, <b>{name}</b>! Shaxsiy AI Ish Qidirish Botiga xush kelibsiz.\n\n"
+            "📄 <b>Iltimos, rezyumengizni PDF formatida yuboring.</b>\n\n"
+            "Rezyumengizni faqat <code>.pdf</code> formatida yuklaganingizdan so‘ng, "
+            "Gemini sun'iy intellekti uni o‘qib chiqib, sizga mos ish qidirish kalit so‘zlarini avtomatik aniqlab beradi "
+            "va <code>hh.uz</code> hamda <code>LinkedIn</code> dan mos vakansiyalarni topib keladi.\n"
+            "📊 <b>Kunlik qidiruv limiti:</b> {limit_str}"
+        ),
+        "welcome_with_resume": (
+            "👋 Assalomu alaykum, <b>{name}</b>!\n\n"
+            "📄 <b>Yuklangan rezyumengiz:</b> <code>{filename}</code>\n"
+            "🔑 <b>Faol kalit so‘zlaringiz:</b> <code>{keywords}</code>\n"
+            "📊 <b>Kunlik qidiruv limiti:</b> {limit_str}\n\n"
+            "• Vakansiyalarni qidirish uchun <b>[ 🔍 Hozir qidirish ]</b> tugmasini bosing.\n"
+            "• Yangi rezyume yuklash uchun <b>PDF (.pdf)</b> faylingizni shu chatga yuboring."
+        ),
+        "limit_unlimited": "Cheksiz (Admin 👑)",
+        "limit_daily": "Kuniga {limit} marta",
+        "banned_msg": "🚫 <b>Kechirasiz, sizning profilingiz admin tomonidan bloklangan.</b>",
+        "no_admin_access": "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q",
+        "upload_pdf_only": (
+            "⚠️ <b>Iltimos, rezyumengizni faqat PDF (.pdf) formatida yuboring!</b>\n"
+            "Bu botga faylni o‘qish va sizga mos vakansiyalarni aniq tahlil qilish imkonini beradi."
+        ),
+        "upload_pdf_prompt": (
+            "📄 <b>Iltimos, rezyumengizni PDF formatida yuboring.</b>\n\n"
+            "Pastdagi 📎 (skrepka) tugmasini bosib, kompyuter yoki telefoningizdan "
+            "<code>.pdf</code> formatdagi rezyume faylingizni yuboring."
+        ),
+        "need_resume_first": "📄 <b>Iltimos, avval rezyumengizni PDF formatida yuboring!</b>",
+        "pdf_received_wait": "⏳ <b>Rezyumengiz qabul qilindi!</b>\nMatn o‘qilmoqda va sizga mos kalit so‘zlar aniqlanmoqda...",
+        "pdf_empty_error": (
+            "⚠️ <b>Ushbu PDF fayldan matn o‘qib bo‘lmadi (skanerlangan rasm bo‘lishi mumkin).</b>\n"
+            "Iltimos, matni nusxalanadigan (text-based) PDF rezyume yuboring."
+        ),
+        "pdf_analyzed_keywords": (
+            "✅ <b>Rezyumengiz muvaffaqiyatli o‘qildi!</b> ({filename})\n"
+            "👨‍💼 <b>Yo‘nalish:</b> {profession}\n\n"
+            "🔑 <b>Sizning rezyumengiz asosida quyidagi kalit so‘zlar aniqlandi:</b>\n"
+            "{keywords_list}\n\n"
+            "❓ <b>Shular bo‘yicha qidiraylikmi yoki yana boshqa kalit so‘z qo‘shasizmi?</b>\n"
+            "<i>(Quyidagi tugmani bosing yoki qo‘shimcha kalit so‘zlaringizni vergul bilan yozib yuboring)</i>"
+        ),
+        "my_keywords_msg": (
+            "🔑 <b>Sizning joriy qidiruv kalit so‘zlaringiz:</b>\n{keywords_list}\n\n"
+            "❓ Shular bo‘yicha qidiraylikmi yoki yana boshqa kalit so‘z qo‘shasizmi?\n"
+            "<i>(Yangi kalit so‘z qo‘shish uchun ularni vergul bilan yozib yuboring)</i>"
+        ),
+        "enter_extra_keywords": (
+            "✍️ <b>Qo‘shmoqchi bo‘lgan yangi kalit so‘zlaringizni vergul bilan ajratib yozib yuboring:</b>\n"
+            "<i>Masalan: Инженер ПТО, ЭОМ, Проектировщик, Electrical Engineer</i>"
+        ),
+        "keywords_added": (
+            "✅ <b>Yangi kalit so‘zlar qo‘shildi!</b>\n"
+            "🔑 <b>Yangilangan ro‘yxat:</b> <code>{keywords}</code>\n\n"
+            "🚀 Ushbu kalit so‘zlar asosida vakansiyalarni qidirish boshlanmoqda..."
+        ),
+        "scan_already_running": "⏳ <b>Siz uchun qidiruv allaqachon bajarilmoqda...</b> Iltimos, yakunlanishini kuting.",
+        "quota_exhausted_user": (
+            "⚠️ <b>Kunlik qidiruv limitingiz tugadi ({limit}/{limit})!</b>\n\n"
+            "Gemini API bepul limitini tejash maqsadida oddiy foydalanuvchilarga kuniga "
+            "maksimal <b>{limit} marta</b> qidiruv beriladi.\n"
+            "🕒 Ertaga limit avtomatik yangilanadi yoki qo‘shimcha limit olish uchun adminga murojaat qiling."
+        ),
+        "quota_status_regular": "Bugungi limitdan qoldi: {remaining} ta ({used}/{limit})",
+        "quota_status_bonus": "Bonus limit ishlatildi (Qolgan bonus: {bonus} ta)",
+        "scan_started": (
+            "🔍 <b>Qidiruv boshlandi...</b> ({trigger})\n"
+            "📊 <b>Limit holati:</b> {quota_info}\n"
+            "🔑 <b>Kalit so‘zlaringiz:</b> <code>{keywords}</code>\n"
+            "⏳ <code>[hh.uz]</code> va <code>[LinkedIn]</code> tekshirilmoqda..."
+        ),
+        "scan_stopped": "⏹️ <b>Qidiruv to‘xtatildi va avto-jadval pauza qilindi!</b>",
+        "schedule_resumed": "▶️ <b>Avtomatik rejim (09:00 va 19:00 UZT) siz uchun qayta faollashtirildi!</b>",
+        "history_cleared": (
+            "🗑️ <b>Sizning qidiruv tarixingiz tozalandi!</b> ({count} ta yozuv o‘chirildi).\n"
+            "Endi <b>[ 🔍 Hozir qidirish ]</b> ni bossangiz, barcha yangi vakansiyalar qaytadan keladi."
+        ),
+        "scan_no_new_results": (
+            "✅ <b>Qidiruv yakunlandi.</b>\n\n"
+            "📊 <b>Qidiruv natijasi:</b>\n"
+            "• <code>[hh.uz]</code>: Yangi <b>{hh_new}</b> ta (Jami: {hh_total} | Ko‘rilgan: {hh_seen})\n"
+            "• <code>[LinkedIn]</code>: Yangi <b>{li_new}</b> ta (Jami: {li_total} | Ko‘rilgan: {li_seen}){hint}"
+        ),
+        "scan_hint_clear": "\n\n💡 <i>Avvalgi vakansiyalarni qayta olish uchun <b>[ 🗑️ Tarixni tozalash ]</b> ni bosing.</i>",
+        "ai_limit_fallback_notice": "⚠️ <b>AI limiti tugadi, lekin topilgan vakansiyalar:</b>",
+        "scan_finished": "✅ <b>Qidiruv yakunlandi!{stopped_note}</b>\nJami yuborildi: <b>{count}</b> ta yangi vakansiya{mode_note}.",
+        "card_high_badge": "🔥 <b>O‘ta mos vakansiya!</b>",
+        "card_new_badge": "📌 <b>Yangi vakansiya</b>",
+        "card_contacts": "Aloqa",
+        "card_open_link": "Vakansiyani ochish",
+        "card_company": "Kompaniya",
+        "card_location": "Hudud",
+        "card_link": "Havola",
+        "card_cl_header": "✉️ <b>Tayyor Kover-xat ({lang} — nusxalash uchun ustiga bosing):</b>",
+        "card_cl_template_note": "ℹ️ <i>AI limiti tugagani sababli tayyor shablon kover-xat qo‘yildi.</i>",
+        "card_dismissed": "❌ <b>Kerak emas deb belgilandi</b>",
+        "cl_generating_toast": "✍️ Kover-xat tayyorlanmoqda...",
+        "skip_toast": "O'tkazib yuborildi ❌",
+        "admin_direct_msg_header": "📩 <b>Admindan xabar:</b>",
+        "admin_broadcast_header": "📢 <b>Admin e'loni:</b>",
+        "admin_bonus_gift": "🎁 Admin sizga <b>+{count} ta</b> qo‘shimcha qidiruv limiti taqdim etdi!",
+        "admin_unbanned_notice": "✅ Sizning profilingiz admin tomonidan blokdan chiqarildi!",
+    },
+    "ru": {
+        "btn_search_now": "🔍 Искать сейчас",
+        "btn_upload_resume": "📄 Загрузить резюме (PDF)",
+        "btn_my_keywords": "🔑 Мои ключевые слова",
+        "btn_clear_seen": "🗑️ Очистить историю",
+        "btn_stop_search": "⏹️ Остановить поиск",
+        "btn_resume_schedule": "▶️ Возобновить авто-поиск",
+        "btn_change_lang": "🌐 Сменить язык",
+        "btn_write_cl": "✍️ Написать сопроводительное",
+        "btn_skip": "❌ Не интересует",
+        "btn_kw_confirm": "🔍 Искать по этим словам",
+        "btn_kw_add": "➕ Добавить ключевые слова",
+        "choose_lang_prompt": (
+            "🇺🇿 <b>Iltimos, muloqot tilini tanlang:</b>\n"
+            "🇷🇺 <b>Пожалуйста, выберите язык интерфейса:</b>\n"
+            "🇬🇧 <b>Please select your preferred language:</b>"
+        ),
+        "lang_saved": "✅ <b>Выбран русский язык!</b>",
+        "welcome_no_resume": (
+            "👋 Здравствуйте, <b>{name}</b>! Добро пожаловать в персональный AI-бот для поиска работы.\n\n"
+            "📄 <b>Пожалуйста, отправьте ваше резюме в формате PDF.</b>\n\n"
+            "После загрузки файла <code>.pdf</code> искусственный интеллект Gemini проанализирует его, "
+            "автоматически подберет подходящие ключевые слова и найдет свежие вакансии с <code>hh.uz</code> и <code>LinkedIn</code>.\n"
+            "📊 <b>Дневной лимит поиска:</b> {limit_str}"
+        ),
+        "welcome_with_resume": (
+            "👋 Здравствуйте, <b>{name}</b>!\n\n"
+            "📄 <b>Загруженное резюме:</b> <code>{filename}</code>\n"
+            "🔑 <b>Активные ключевые слова:</b> <code>{keywords}</code>\n"
+            "📊 <b>Дневной лимит поиска:</b> {limit_str}\n\n"
+            "• Нажмите <b>[ 🔍 Искать сейчас ]</b> для запуска поиска вакансий.\n"
+            "• Чтобы обновить резюме, просто отправьте новый файл <b>PDF (.pdf)</b> в этот чат."
+        ),
+        "limit_unlimited": "Безлимитно (Админ 👑)",
+        "limit_daily": "{limit} раза в день",
+        "banned_msg": "🚫 <b>Извините, ваш профиль заблокирован администратором.</b>",
+        "no_admin_access": "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q",
+        "upload_pdf_only": (
+            "⚠️ <b>Пожалуйста, отправьте резюме только в формате PDF (.pdf)!</b>\n"
+            "Это необходимо для точного чтения текста и анализа подходящих вакансий."
+        ),
+        "upload_pdf_prompt": (
+            "📄 <b>Пожалуйста, отправьте ваше резюме в формате PDF.</b>\n\n"
+            "Нажмите на значок 📎 (скрепка) ниже и выберите ваш файл резюме в формате <code>.pdf</code>."
+        ),
+        "need_resume_first": "📄 <b>Пожалуйста, сначала отправьте ваше резюме в формате PDF!</b>",
+        "pdf_received_wait": "⏳ <b>Резюме получено!</b>\nЧитаем текст и подбираем подходящие ключевые слова...",
+        "pdf_empty_error": (
+            "⚠️ <b>Не удалось прочитать текст из этого PDF-файла (возможно, это скан-копия).</b>\n"
+            "Пожалуйста, отправьте текстовый PDF-файл резюме."
+        ),
+        "pdf_analyzed_keywords": (
+            "✅ <b>Ваше резюме успешно прочитано!</b> ({filename})\n"
+            "👨‍💼 <b>Направление:</b> {profession}\n\n"
+            "🔑 <b>На основе вашего резюме определены следующие ключевые слова:</b>\n"
+            "{keywords_list}\n\n"
+            "❓ <b>Искать по этим словам или хотите добавить еще ключевые слова?</b>\n"
+            "<i>(Нажмите кнопку ниже или напишите дополнительные ключевые слова через запятую)</i>"
+        ),
+        "my_keywords_msg": (
+            "🔑 <b>Ваши текущие ключевые слова для поиска:</b>\n{keywords_list}\n\n"
+            "❓ Искать по этим словам или хотите добавить новые?\n"
+            "<i>(Чтобы добавить новые слова, просто напишите их через запятую)</i>"
+        ),
+        "enter_extra_keywords": (
+            "✍️ <b>Напишите дополнительные ключевые слова через запятую:</b>\n"
+            "<i>Например: Инженер ПТО, ЭОМ, Проектировщик, Electrical Engineer</i>"
+        ),
+        "keywords_added": (
+            "✅ <b>Новые ключевые слова добавлены!</b>\n"
+            "🔑 <b>Обновленный список:</b> <code>{keywords}</code>\n\n"
+            "🚀 Запускаем поиск вакансий по обновленным ключевым словам..."
+        ),
+        "scan_already_running": "⏳ <b>Поиск для вас уже выполняется...</b> Пожалуйста, дождитесь завершения.",
+        "quota_exhausted_user": (
+            "⚠️ <b>Ваш дневной лимит поиска исчерпан ({limit}/{limit})!</b>\n\n"
+            "В целях экономии бесплатного лимита Gemini API обычным пользователям доступно "
+            "максимум <b>{limit} поиска в день</b>.\n"
+            "🕒 Завтра лимит обновится автоматически, либо обратитесь к администратору за дополнительным лимитом."
+        ),
+        "quota_status_regular": "Осталось на сегодня: {remaining} ({used}/{limit})",
+        "quota_status_bonus": "Использован бонусный поиск (Осталось бонусов: {bonus})",
+        "scan_started": (
+            "🔍 <b>Поиск начался...</b> ({trigger})\n"
+            "📊 <b>Статус лимита:</b> {quota_info}\n"
+            "🔑 <b>Ключевые слова:</b> <code>{keywords}</code>\n"
+            "⏳ Проверяем свежие вакансии на <code>[hh.uz]</code> и <code>[LinkedIn]</code>..."
+        ),
+        "scan_stopped": "⏹️ <b>Поиск остановлен, авто-расписание поставлено на паузу!</b>",
+        "schedule_resumed": "▶️ <b>Автоматический режим (09:00 и 19:00 UZT) снова активирован для вас!</b>",
+        "history_cleared": (
+            "🗑️ <b>Ваша история поиска очищена!</b> (Удалено записей: {count}).\n"
+            "Теперь при нажатии <b>[ 🔍 Искать сейчас ]</b> все свежие вакансии придут заново."
+        ),
+        "scan_no_new_results": (
+            "✅ <b>Поиск завершен.</b>\n\n"
+            "📊 <b>Результаты поиска:</b>\n"
+            "• <code>[hh.uz]</code>: Новых <b>{hh_new}</b> (Всего: {hh_total} | Просмотрено: {hh_seen})\n"
+            "• <code>[LinkedIn]</code>: Новых <b>{li_new}</b> (Всего: {li_total} | Просмотрено: {li_seen}){hint}"
+        ),
+        "scan_hint_clear": "\n\n💡 <i>Чтобы получить ранее просмотренные вакансии заново, нажмите <b>[ 🗑️ Очистить историю ]</b>.</i>",
+        "ai_limit_fallback_notice": "⚠️ <b>Лимит ИИ исчерпан, но вот найденные вакансии:</b>",
+        "scan_finished": "✅ <b>Поиск завершен!{stopped_note}</b>\nВсего отправлено новых вакансий: <b>{count}</b>{mode_note}.",
+        "card_high_badge": "🔥 <b>Отличное совпадение!</b>",
+        "card_new_badge": "📌 <b>Новая вакансия</b>",
+        "card_contacts": "Контакты",
+        "card_open_link": "Открыть вакансию",
+        "card_company": "Компания",
+        "card_location": "Локация",
+        "card_link": "Ссылка",
+        "card_cl_header": "✉️ <b>Готовое сопроводительное письмо ({lang} — нажмите для копирования):</b>",
+        "card_cl_template_note": "ℹ️ <i>Лимит ИИ временно исчерпан, использован готовый шаблон письма.</i>",
+        "card_dismissed": "❌ <b>Отмечено как неактуальное</b>",
+        "cl_generating_toast": "✍️ Пишем сопроводительное письмо...",
+        "skip_toast": "Пропущено ❌",
+        "admin_direct_msg_header": "📩 <b>Сообщение от администратора:</b>",
+        "admin_broadcast_header": "📢 <b>Объявление администратора:</b>",
+        "admin_bonus_gift": "🎁 Администратор начислил вам <b>+{count}</b> дополнительных поисков!",
+        "admin_unbanned_notice": "✅ Ваш профиль разблокирован администратором!",
+    },
+    "en": {
+        "btn_search_now": "🔍 Search now",
+        "btn_upload_resume": "📄 Upload Resume (PDF)",
+        "btn_my_keywords": "🔑 My Keywords",
+        "btn_clear_seen": "🗑️ Clear History",
+        "btn_stop_search": "⏹️ Stop Search",
+        "btn_resume_schedule": "▶️ Resume Auto-Search",
+        "btn_change_lang": "🌐 Change language",
+        "btn_write_cl": "✍️ Write Cover Letter",
+        "btn_skip": "❌ Not interested",
+        "btn_kw_confirm": "🔍 Search with these keywords",
+        "btn_kw_add": "➕ Add more keywords",
+        "choose_lang_prompt": (
+            "🇺🇿 <b>Iltimos, muloqot tilini tanlang:</b>\n"
+            "🇷🇺 <b>Пожалуйста, выберите язык интерфейса:</b>\n"
+            "🇬🇧 <b>Please select your preferred language:</b>"
+        ),
+        "lang_saved": "✅ <b>English language selected!</b>",
+        "welcome_no_resume": (
+            "👋 Hello, <b>{name}</b>! Welcome to the Personal AI Job Search Bot.\n\n"
+            "📄 <b>Please send your resume in PDF format.</b>\n\n"
+            "Once you upload your <code>.pdf</code> resume, Gemini AI will read it, "
+            "automatically suggest matching job search keywords, and find fresh vacancies on <code>hh.uz</code> and <code>LinkedIn</code>.\n"
+            "📊 <b>Daily search limit:</b> {limit_str}"
+        ),
+        "welcome_with_resume": (
+            "👋 Hello, <b>{name}</b>!\n\n"
+            "📄 <b>Uploaded resume:</b> <code>{filename}</code>\n"
+            "🔑 <b>Active keywords:</b> <code>{keywords}</code>\n"
+            "📊 <b>Daily search limit:</b> {limit_str}\n\n"
+            "• Tap <b>[ 🔍 Search now ]</b> to find matching vacancies.\n"
+            "• To update your resume, simply send a new <b>PDF (.pdf)</b> file to this chat."
+        ),
+        "limit_unlimited": "Unlimited (Admin 👑)",
+        "limit_daily": "{limit} times per day",
+        "banned_msg": "🚫 <b>Sorry, your profile has been blocked by the administrator.</b>",
+        "no_admin_access": "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q",
+        "upload_pdf_only": (
+            "⚠️ <b>Please send your resume in PDF (.pdf) format only!</b>\n"
+            "This allows the bot to accurately read and analyze your qualifications."
+        ),
+        "upload_pdf_prompt": (
+            "📄 <b>Please send your resume in PDF format.</b>\n\n"
+            "Tap the 📎 (attachment) icon below and select your <code>.pdf</code> resume file."
+        ),
+        "need_resume_first": "📄 <b>Please upload your resume in PDF format first!</b>",
+        "pdf_received_wait": "⏳ <b>Resume received!</b>\nExtracting text and predicting optimal job search keywords...",
+        "pdf_empty_error": (
+            "⚠️ <b>Could not extract text from this PDF file (it may be a scanned image).</b>\n"
+            "Please send a text-based PDF resume."
+        ),
+        "pdf_analyzed_keywords": (
+            "✅ <b>Your resume has been analyzed!</b> ({filename})\n"
+            "👨‍💼 <b>Field / Role:</b> {profession}\n\n"
+            "🔑 <b>Based on your resume, the following keywords were identified:</b>\n"
+            "{keywords_list}\n\n"
+            "❓ <b>Shall we search using these keywords, or would you like to add more?</b>\n"
+            "<i>(Tap a button below or type additional keywords separated by commas)</i>"
+        ),
+        "my_keywords_msg": (
+            "🔑 <b>Your current job search keywords:</b>\n{keywords_list}\n\n"
+            "❓ Search with these keywords or add new ones?\n"
+            "<i>(To add new keywords, simply type them separated by commas)</i>"
+        ),
+        "enter_extra_keywords": (
+            "✍️ <b>Type the additional keywords you want to add, separated by commas:</b>\n"
+            "<i>Example: Electrical Engineer, Project Engineer, AutoCAD, Solar</i>"
+        ),
+        "keywords_added": (
+            "✅ <b>New keywords added!</b>\n"
+            "🔑 <b>Updated list:</b> <code>{keywords}</code>\n\n"
+            "🚀 Starting vacancy search with your updated keywords..."
+        ),
+        "scan_already_running": "⏳ <b>A search is already in progress for you...</b> Please wait for it to finish.",
+        "quota_exhausted_user": (
+            "⚠️ <b>Your daily search limit has been reached ({limit}/{limit})!</b>\n\n"
+            "To preserve free Gemini API quota, regular users can run up to <b>{limit} searches per day</b>.\n"
+            "🕒 Your limit resets automatically tomorrow, or contact the admin for bonus searches."
+        ),
+        "quota_status_regular": "Remaining today: {remaining} ({used}/{limit})",
+        "quota_status_bonus": "Bonus search used (Remaining bonus: {bonus})",
+        "scan_started": (
+            "🔍 <b>Search started...</b> ({trigger})\n"
+            "📊 <b>Quota status:</b> {quota_info}\n"
+            "🔑 <b>Your keywords:</b> <code>{keywords}</code>\n"
+            "⏳ Checking recent vacancies on <code>[hh.uz]</code> and <code>[LinkedIn]</code>..."
+        ),
+        "scan_stopped": "⏹️ <b>Search stopped and auto-schedule paused!</b>",
+        "schedule_resumed": "▶️ <b>Automatic schedule (09:00 and 19:00 UZT) resumed for you!</b>",
+        "history_cleared": (
+            "🗑️ <b>Your search history has been cleared!</b> ({count} entries removed).\n"
+            "Tap <b>[ 🔍 Search now ]</b> to receive all recent vacancies again."
+        ),
+        "scan_no_new_results": (
+            "✅ <b>Search completed.</b>\n\n"
+            "📊 <b>Search diagnostics:</b>\n"
+            "• <code>[hh.uz]</code>: New <b>{hh_new}</b> (Total: {hh_total} | Seen: {hh_seen})\n"
+            "• <code>[LinkedIn]</code>: New <b>{li_new}</b> (Total: {li_total} | Seen: {li_seen}){hint}"
+        ),
+        "scan_hint_clear": "\n\n💡 <i>To re-fetch previously seen vacancies, tap <b>[ 🗑️ Clear History ]</b>.</i>",
+        "ai_limit_fallback_notice": "⚠️ <b>AI quota reached, but here are the found vacancies:</b>",
+        "scan_finished": "✅ <b>Search completed!{stopped_note}</b>\nTotal new vacancies sent: <b>{count}</b>{mode_note}.",
+        "card_high_badge": "🔥 <b>High Match Vacancy!</b>",
+        "card_new_badge": "📌 <b>New Vacancy</b>",
+        "card_contacts": "Contacts",
+        "card_open_link": "Open Vacancy",
+        "card_company": "Company",
+        "card_location": "Location",
+        "card_link": "Link",
+        "card_cl_header": "✉️ <b>Ready Cover Letter ({lang} — tap to copy):</b>",
+        "card_cl_template_note": "ℹ️ <i>AI quota temporarily reached; a ready template cover letter was provided.</i>",
+        "card_dismissed": "❌ <b>Marked as not interested</b>",
+        "cl_generating_toast": "✍️ Generating Cover Letter...",
+        "skip_toast": "Skipped ❌",
+        "admin_direct_msg_header": "📩 <b>Message from Admin:</b>",
+        "admin_broadcast_header": "📢 <b>Admin Announcement:</b>",
+        "admin_bonus_gift": "🎁 Admin has granted you <b>+{count}</b> bonus searches!",
+        "admin_unbanned_notice": "✅ Your profile has been unblocked by the administrator!",
+    },
+}
+
+
+def normalize_lang(lang: str | None) -> Literal["uz", "ru", "en"]:
+    if lang in ("uz", "ru", "en"):
+        return lang  # type: ignore[return-value]
+    return "uz"
+
+
+def tr(lang: str | None, key: str, **kwargs: Any) -> str:
+    """Tanlangan til bo'yicha TRANSLATIONS lug'atidan matnni olib formatlaydi."""
+    code = normalize_lang(lang)
+    template = TRANSLATIONS.get(code, TRANSLATIONS["uz"]).get(key) or TRANSLATIONS["uz"].get(key, key)
+    if kwargs:
+        try:
+            return template.format(**kwargs)
+        except Exception:
+            return template
+    return template
+
+
+# Barcha 3 tildagi Reply Keyboard tugmalari to'plami (matn orqali bosilganda tanib olish uchun)
+ALL_SEARCH_NOW_BTNS = {TRANSLATIONS[l]["btn_search_now"] for l in TRANSLATIONS} | {"/scan"}
+ALL_UPLOAD_RESUME_BTNS = {TRANSLATIONS[l]["btn_upload_resume"] for l in TRANSLATIONS}
+ALL_MY_KEYWORDS_BTNS = {TRANSLATIONS[l]["btn_my_keywords"] for l in TRANSLATIONS}
+ALL_CLEAR_SEEN_BTNS = {TRANSLATIONS[l]["btn_clear_seen"] for l in TRANSLATIONS} | {"/clear"}
+ALL_STOP_SEARCH_BTNS = {TRANSLATIONS[l]["btn_stop_search"] for l in TRANSLATIONS}
+ALL_RESUME_SCHED_BTNS = {TRANSLATIONS[l]["btn_resume_schedule"] for l in TRANSLATIONS}
+ALL_CHANGE_LANG_BTNS = {TRANSLATIONS[l]["btn_change_lang"] for l in TRANSLATIONS} | {"/language", "/lang"}
+
+
+# =====================================================================
+# 3. TARMOQ VA QIDIRUV KONSTANTALARI
+# =====================================================================
 
 # LinkedIn uchun haqiqiy Chrome brauzeri sarlavhalari (TEGILMADI)
 BROWSER_HEADERS: dict[str, str] = {
@@ -113,7 +511,6 @@ BROWSER_HEADERS: dict[str, str] = {
     "Upgrade-Insecure-Requests": "1",
 }
 
-# hh.uz API uchun HTTP 403 ni aylanib o'tuvchi sarlavhalar
 HH_HEADER_PROFILES: list[dict[str, str]] = [
     {
         "User-Agent": "EnergyCareerUzBot/2.1 (contact@energycareer.uz)",
@@ -170,14 +567,6 @@ DEFAULT_FALLBACK_KEYWORDS: list[str] = [
 LINKEDIN_GUEST_SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 LINKEDIN_GUEST_DETAIL_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 
-# Telegram Reply Keyboard tugmalari matni
-BTN_SEARCH_NOW = "🔍 Hozir qidirish"
-BTN_UPLOAD_RESUME = "📄 Rezyume yuklash (PDF)"
-BTN_MY_KEYWORDS = "🔑 Kalit so‘zlarim"
-BTN_CLEAR_SEEN = "🗑️ Tarixni tozalash"
-BTN_STOP_SEARCH = "⏹️ Qidiruvni to‘xtatish"
-BTN_RESUME_SCHEDULE = "▶️ Qayta faollashtirish"
-
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 PHONE_REGEX = re.compile(r"(?:\+?998[\s\-()]*)?(?:\d{2}[\s\-()]*)\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 
@@ -186,13 +575,12 @@ USER_DATA_LOCKS: dict[str, threading.Lock] = {}
 USER_SCAN_LOCKS: dict[str, threading.Lock] = {}
 USER_STOP_EVENTS: dict[str, threading.Event] = {}
 
-# Admin interaktiv rejimi (broadcast, ban, add_limit uchun kutilayotgan amal)
+# Admin interaktiv rejimi ("broadcast", "sendmsg", "ban", "addlimit")
 ADMIN_PENDING_ACTION: dict[int, str | None] = {}
 
 
 def is_admin(user_id: int | str | None) -> bool:
-    """Foydalanuvchi ID raqami ADMIN_ID ga tengligini tekshiradi."""
-    if user_id is None:
+    if user_id is None or ADMIN_ID == 0:
         return False
     try:
         return int(user_id) == ADMIN_ID
@@ -225,7 +613,7 @@ def get_user_stop_event(user_id: str | int) -> threading.Event:
 
 
 # =====================================================================
-# 2. RENDER.COM / KOYEB VA GITHUB UCHUN FAYLLARNI AVTOMATIK YARATISH
+# 4. RENDER.COM / KOYEB VA GITHUB UCHUN FAYLLARNI AVTOMATIK YARATISH
 # =====================================================================
 
 def auto_setup() -> None:
@@ -284,7 +672,7 @@ def auto_setup() -> None:
 
 
 # =====================================================================
-# 3. RENDER / KOYEB "HEALTH CHECK" VA KEEP-ALIVE SERVERI
+# 5. RENDER / KOYEB "HEALTH CHECK" VA KEEP-ALIVE SERVERI
 # =====================================================================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -294,7 +682,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         payload = {
             "status": "ok",
-            "service": "MultiUserJobAgentWithAdmin",
+            "service": "MultiUserJobAgentMultilingual",
             "model": ACTIVE_GEMINI_MODEL or GEMINI_MODEL,
             "tashkent_time": get_tashkent_now().strftime("%Y-%m-%d %H:%M:%S UTC+5"),
         }
@@ -334,7 +722,7 @@ def start_health_check_server() -> None:
 
 
 # =====================================================================
-# 4. GEMINI SXEMALARI (KALIT SO'Z ANIQLASH + BATCH TAHLIL)
+# 6. GEMINI SXEMALARI (KALIT SO'Z ANIQLASH + BATCH TAHLIL)
 # =====================================================================
 
 class ResumeKeywordsExtraction(BaseModel):
@@ -378,7 +766,7 @@ class BatchVacancyEvaluationList(BaseModel):
 
 
 # =====================================================================
-# 5. FOYDALANUVCHI PROFILI, KUNLIK LIMIT VA STATISTIKA FUNKSIYALARI
+# 7. FOYDALANUVCHI PROFILI, TIL SOZLAMASI VA KUNLIK LIMIT
 # =====================================================================
 
 def get_user_dir(user_id: str | int) -> Path:
@@ -397,10 +785,11 @@ def load_user_profile(user_id: str | int) -> dict[str, Any]:
         "user_id": uid,
         "full_name": "",
         "username": "",
+        "ui_lang": "",  # Bo'sh bo'lsa -> birinchi kirishda til tanlash so'raladi
         "is_banned": False,
         "has_resume": False,
         "resume_filename": "",
-        "resume_lang": "ru",
+        "resume_lang": "uz",
         "resume_text": "",
         "profession": "",
         "keywords": [],
@@ -444,7 +833,6 @@ def save_user_profile(user_id: str | int, profile: dict[str, Any]) -> None:
 
 
 def update_user_identity(message: Message) -> dict[str, Any]:
-    """Foydalanuvchi ismi va username ma'lumotlarini profilga yozib qo'yadi."""
     uid = str(message.chat.id)
     profile = load_user_profile(uid)
     if message.from_user:
@@ -460,14 +848,10 @@ def update_user_identity(message: Message) -> dict[str, Any]:
 
 
 def check_and_consume_search_quota(user_id: str | int) -> tuple[bool, str]:
-    """
-    Kunlik qidiruv limitini tekshiradi va 1 ta urinishni hisobdan chiqaradi:
-      - Admin (ADMIN_ID) uchun limit cheksiz.
-      - Oddiy foydalanuvchi uchun kuniga DAILY_SEARCH_LIMIT (3 marta) + admin bergan bonus_searches.
-    """
     uid = str(user_id).strip()
     today = get_today_str()
     profile = load_user_profile(uid)
+    lang = normalize_lang(profile.get("ui_lang"))
 
     if profile.get("daily_search_date") != today:
         profile["daily_search_date"] = today
@@ -477,7 +861,7 @@ def check_and_consume_search_quota(user_id: str | int) -> tuple[bool, str]:
         profile["daily_search_count"] = int(profile.get("daily_search_count", 0)) + 1
         profile["total_searches"] = int(profile.get("total_searches", 0)) + 1
         save_user_profile(uid, profile)
-        return True, "Cheksiz (Admin 👑)"
+        return True, tr(lang, "limit_unlimited")
 
     used_today = int(profile.get("daily_search_count", 0))
     bonus = int(profile.get("bonus_searches", 0))
@@ -487,21 +871,22 @@ def check_and_consume_search_quota(user_id: str | int) -> tuple[bool, str]:
         profile["total_searches"] = int(profile.get("total_searches", 0)) + 1
         save_user_profile(uid, profile)
         remaining = (DAILY_SEARCH_LIMIT - (used_today + 1)) + bonus
-        return True, f"Bugungi limitdan qoldi: {remaining} ta ({used_today + 1}/{DAILY_SEARCH_LIMIT})"
+        return True, tr(
+            lang,
+            "quota_status_regular",
+            remaining=remaining,
+            used=used_today + 1,
+            limit=DAILY_SEARCH_LIMIT,
+        )
 
     if bonus > 0:
         profile["bonus_searches"] = bonus - 1
         profile["daily_search_count"] = used_today + 1
         profile["total_searches"] = int(profile.get("total_searches", 0)) + 1
         save_user_profile(uid, profile)
-        return True, f"Bonus limit ishlatildi (Qolgan bonus: {bonus - 1} ta)"
+        return True, tr(lang, "quota_status_bonus", bonus=bonus - 1)
 
-    return False, (
-        f"⚠️ <b>Kunlik qidiruv limitingiz tugadi ({DAILY_SEARCH_LIMIT}/{DAILY_SEARCH_LIMIT})!</b>\n\n"
-        "Gemini API bepul limitini tejash maqsadida oddiy foydalanuvchilarga kuniga "
-        f"maksimal <b>{DAILY_SEARCH_LIMIT} marta</b> qidiruv beriladi.\n"
-        "🕒 Ertaga limit avtomatik yangilanadi yoki qo‘shimcha limit olish uchun adminga murojaat qiling."
-    )
+    return False, tr(lang, "quota_exhausted_user", limit=DAILY_SEARCH_LIMIT)
 
 
 def list_all_user_ids() -> list[str]:
@@ -515,7 +900,6 @@ def list_all_user_ids() -> list[str]:
 
 
 def collect_bot_statistics() -> dict[str, Any]:
-    """Admin panel uchun jami foydalanuvchilar va bugungi faol qidiruvlar statistikasini yig'adi."""
     uids = list_all_user_ids()
     today = get_today_str()
     total_users = len(uids)
@@ -614,7 +998,7 @@ def save_user_state(user_id: str | int, state: dict[str, dict[str, Any]]) -> Non
 
 
 # =====================================================================
-# 6. KONFIGURATSIYA, PDF O'QISH VA YORDAMCHI FUNKSIYALAR
+# 8. KONFIGURATSIYA, PDF O'QISH VA YORDAMCHI FUNKSIYALAR
 # =====================================================================
 
 def get_config() -> dict[str, str]:
@@ -755,7 +1139,7 @@ def extract_contacts_from_vacancy(detail: dict[str, Any], full_text: str) -> str
 
 
 # =====================================================================
-# 7. GEMINI YORDAMIDA REZYUMEDAN AVTOMATIK KALIT SO'Z TAXMIN QILISH
+# 9. GEMINI YORDAMIDA REZYUMEDAN AVTOMATIK KALIT SO'Z TAXMIN QILISH
 # =====================================================================
 
 def _call_gemini_with_fallback(
@@ -883,7 +1267,7 @@ QOIDALAR:
 
 
 # =====================================================================
-# 8. QIDIRUV MANBALARI: [hh.uz] (403 FIX) VA [LinkedIn] (TEGILMADI)
+# 10. QIDIRUV MANBALARI: [hh.uz] (403 FIX) VA [LinkedIn] (TEGILMADI)
 # =====================================================================
 
 def format_salary(salary_data: dict[str, Any] | None) -> str:
@@ -1252,14 +1636,12 @@ def search_linkedin_jobs(
 
 
 # =====================================================================
-# 9. GEMINI BATCH TAHLILI VA 429 QUOTA EXCEEDED HIMOYASI (TRY-EXCEPT)
+# 11. GEMINI BATCH TAHLILI VA FOYDALANUVCHI TILIDA KOVER-XAT
 # =====================================================================
 
-def build_no_ai_simple_item(vac: dict[str, Any], default_lang: str = "ru") -> dict[str, Any]:
-    combined = f"{vac.get('title', '')} {vac.get('description', '')}"
-    lang = detect_language_fast(combined) or default_lang
+def build_no_ai_simple_item(vac: dict[str, Any], default_lang: str = "uz") -> dict[str, Any]:
     return {
-        "detected_language": lang,
+        "detected_language": default_lang,
         "match_score": 0,
         "contact_details": str(vac.get("contacts") or ""),
         "short_summary": "",
@@ -1271,10 +1653,16 @@ def analyze_vacancies_batch_with_gemini(
     client: genai.Client,
     batch: list[dict[str, Any]],
     resume_text: str,
+    user_lang: str = "uz",
 ) -> tuple[dict[str, dict[str, Any]], bool]:
+    """
+    5 ta vakansiyani foydalanuvchi rezyumesi bilan solishtiradi va `short_summary`ni
+    foydalanuvchi tanlagan tilda (`user_lang`) qaytaradi.
+    """
     if not batch:
         return {}, False
 
+    lang_name = {"uz": "O'zbek", "ru": "Русский", "en": "English"}.get(user_lang, "O'zbek")
     vacancies_block: list[str] = []
     for idx, vac in enumerate(batch, start=1):
         vacancies_block.append(
@@ -1290,7 +1678,7 @@ Siz professional HR va karyera maslahatchisisiz. Quyidagi {len(batch)} ta vakans
 
 QAT'IY QOIDALAR:
 1. Vakansiyadagi ish staji ("1-3 yil", "3-6 yil") talabi ballni (`match_score`) tushirmasin.
-2. `short_summary` JUDA QISQA bo'lsin (maksimal 1-2 gap: asosiy vazifa va nega mosligi).
+2. `short_summary` JUDA QISQA bo'lsin (maksimal 1-2 gap) va AYNAN {lang_name} ({user_lang.upper()}) tilida yozilsin!
 
 FOYDALANUVCHI REZYUMESI:
 {resume_text[:2500]}
@@ -1316,7 +1704,7 @@ VAKANSIYALAR RO'YXATI:
 
         for item_ev in parsed_list:
             results_map[item_ev.vacancy_id] = {
-                "detected_language": item_ev.detected_language,
+                "detected_language": user_lang,
                 "match_score": item_ev.match_score,
                 "contact_details": item_ev.contact_details,
                 "short_summary": item_ev.short_summary,
@@ -1333,7 +1721,7 @@ VAKANSIYALAR RO'YXATI:
     for vac in batch:
         vid = vac["id"]
         if vid not in results_map:
-            results_map[vid] = build_no_ai_simple_item(vac)
+            results_map[vid] = build_no_ai_simple_item(vac, default_lang=user_lang)
         else:
             api_contacts = str(vac.get("contacts") or "").strip()
             if api_contacts and api_contacts not in results_map[vid]["contact_details"]:
@@ -1347,12 +1735,17 @@ def generate_cover_letter_on_demand(
     record: dict[str, Any],
     user_profile: dict[str, Any],
 ) -> tuple[str, bool]:
+    """
+    Kover-xat generatsiya qilinayotganda foydalanuvchining botda tanlagan tili (`ui_lang`)
+    ustuvor hisoblanadi.
+    """
     vac = record["vacancy"]
-    lang = record.get("resume_lang") or user_profile.get("resume_lang") or "ru"
+    preferred_lang = normalize_lang(user_profile.get("ui_lang") or record.get("resume_lang") or "uz")
+    lang_label = {"uz": "O'zbek (lotin)", "ru": "Русский", "en": "English"}[preferred_lang]
     resume_text = user_profile.get("resume_text") or ""
 
     prompt = f"""
-Quyidagi vakansiya uchun nomzod nomidan AYNAN '{lang.upper()}' tilida qisqa, professional va yuborishga tayyor Cover Letter (ilova xati) yozib bering.
+Quyidagi vakansiya uchun nomzod nomidan AYNAN '{lang_label}' ({preferred_lang.upper()}) tilida qisqa, professional va yuborishga tayyor Cover Letter (ilova xati) yozib bering.
 Faqat tayyor xat matnini qaytaring (ortiqcha izohsiz).
 
 Vakansiya: {vac.get('title')}
@@ -1371,20 +1764,20 @@ Nomzod rezyumesi:
     except Exception as exc:
         print(f"[!] Kover-xatda AI limiti tugagan ({str(exc)[:100]}) — tayyor shablon ishlatildi.", flush=True)
 
-    title = vac.get("title", "Мутахассис")
-    company = vac.get("company", "Компания")
-    if lang == "uz":
+    title = vac.get("title", "Mutaxassis")
+    company = vac.get("company", "Kompaniya")
+    if preferred_lang == "uz":
         return (
             f"Assalomu alaykum, {company} jamoasi!\n\n"
-            f"Sizning «{title}» vakansiyangiz bo'yicha murojaat qilmoqdaman. "
-            "Mening bilim va ko'nikmalarim ushbu lavozim talablariga mos keladi.\n\n"
+            f"Sizning «{title}» vakansiyangiz bo‘yicha murojaat qilmoqdaman. "
+            "Mening bilim va amaliy ko‘nikmalarim ushbu lavozim talablariga to‘liq mos keladi.\n\n"
             "Rezyumeimni ilova qilmoqdaman. Suhbatga tayyorman!",
             False,
         )
-    if lang == "en":
+    if preferred_lang == "en":
         return (
             f"Dear Hiring Team at {company},\n\n"
-            f"I am writing to apply for the {title} role. My background and technical skills "
+            f"I am writing to apply for the {title} role. My educational background and technical skills "
             "align well with the requirements of this position.\n\n"
             "Please find my resume attached. Thank you for your time and consideration.",
             False,
@@ -1399,26 +1792,52 @@ Nomzod rezyumesi:
 
 
 # =====================================================================
-# 10. TELEGRAM KLAVIATURALARI VA ADMIN PANEL MENYUSI
+# 12. 3-TILLI TELEGRAM KLAVIATURALARI VA XABAR FORMATLARI
 # =====================================================================
 
-def build_main_reply_keyboard() -> ReplyKeyboardMarkup:
+def build_language_selection_inline_keyboard() -> InlineKeyboardMarkup:
+    """Birinchi kirishda yoki tilni o'zgartirganda chiqadigan 3 tilli inline tugmalar."""
+    kb = InlineKeyboardMarkup(row_width=3)
+    kb.add(
+        InlineKeyboardButton("🇺🇿 O‘zbekcha", callback_data="set_lang|uz"),
+        InlineKeyboardButton("🇷🇺 Русский", callback_data="set_lang|ru"),
+        InlineKeyboardButton("🇬🇧 English", callback_data="set_lang|en"),
+    )
+    return kb
+
+
+def build_main_reply_keyboard(lang: str | None = "uz") -> ReplyKeyboardMarkup:
+    """Foydalanuvchi tanlagan tilga moslashtirilgan asosiy pastki menyu (Reply Keyboard)."""
+    code = normalize_lang(lang)
     markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True, row_width=2)
-    markup.add(KeyboardButton(BTN_SEARCH_NOW), KeyboardButton(BTN_UPLOAD_RESUME))
-    markup.add(KeyboardButton(BTN_MY_KEYWORDS), KeyboardButton(BTN_CLEAR_SEEN))
-    markup.add(KeyboardButton(BTN_STOP_SEARCH), KeyboardButton(BTN_RESUME_SCHEDULE))
+    markup.add(
+        KeyboardButton(tr(code, "btn_search_now")),
+        KeyboardButton(tr(code, "btn_upload_resume")),
+    )
+    markup.add(
+        KeyboardButton(tr(code, "btn_my_keywords")),
+        KeyboardButton(tr(code, "btn_clear_seen")),
+    )
+    markup.add(
+        KeyboardButton(tr(code, "btn_stop_search")),
+        KeyboardButton(tr(code, "btn_resume_schedule")),
+    )
+    markup.add(
+        KeyboardButton(tr(code, "btn_change_lang")),
+    )
     return markup
 
 
 def build_admin_inline_keyboard() -> InlineKeyboardMarkup:
-    """Admin Boshqaruv Menyusi tugmalari (/admin bosilganda chiqadi)."""
+    """Admin Boshqaruv Menyusi tugmalari ([ ✉️ Foydalanuvchiga xabar ] tugmasi bilan)."""
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📊 Statistika", callback_data="admin|stats"),
         InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="admin|users"),
     )
     kb.add(
-        InlineKeyboardButton("📢 Xabar yuborish (Broadcast)", callback_data="admin|broadcast"),
+        InlineKeyboardButton("✉️ Foydalanuvchiga xabar", callback_data="admin|sendmsg"),
+        InlineKeyboardButton("📢 Umumiy e'lon (Broadcast)", callback_data="admin|broadcast"),
     )
     kb.add(
         InlineKeyboardButton("➕ Limit berish (+3)", callback_data="admin|addlimit"),
@@ -1427,30 +1846,32 @@ def build_admin_inline_keyboard() -> InlineKeyboardMarkup:
     return kb
 
 
-def build_keyword_confirm_inline_keyboard() -> InlineKeyboardMarkup:
+def build_keyword_confirm_inline_keyboard(lang: str | None = "uz") -> InlineKeyboardMarkup:
+    code = normalize_lang(lang)
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton(
-            text="🔍 Shular bo‘yicha qidirish",
+            text=tr(code, "btn_kw_confirm"),
             callback_data="kw_action|confirm",
         ),
         InlineKeyboardButton(
-            text="➕ Boshqa kalit so‘z qo‘shish",
+            text=tr(code, "btn_kw_add"),
             callback_data="kw_action|add",
         ),
     )
     return kb
 
 
-def build_vacancy_inline_keyboard(vac_id: str) -> InlineKeyboardMarkup:
+def build_vacancy_inline_keyboard(vac_id: str, lang: str | None = "uz") -> InlineKeyboardMarkup:
+    code = normalize_lang(lang)
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton(
-            text="✍️ Kover-xat yozish",
+            text=tr(code, "btn_write_cl"),
             callback_data=f"write_cl|{vac_id}",
         ),
         InlineKeyboardButton(
-            text="❌ Kerak emas",
+            text=tr(code, "btn_skip"),
             callback_data=f"skip|{vac_id}",
         ),
     )
@@ -1459,23 +1880,24 @@ def build_vacancy_inline_keyboard(vac_id: str) -> InlineKeyboardMarkup:
 
 def format_plain_no_ai_vacancy_message(
     record: dict[str, Any],
+    lang: str | None = "uz",
     cover_letter_text: str | None = None,
     status_note: str | None = None,
 ) -> str:
+    code = normalize_lang(lang)
     vac = record["vacancy"]
-    lang = record.get("resume_lang", "ru")
     source_tag = vac.get("source", "[hh.uz]")
 
     msg = (
         f"📌 <b>{html.escape(str(vac.get('title', '')))}</b>  <code>{html.escape(source_tag)}</code>\n"
-        f"🏢 <b>Kompaniya:</b> {html.escape(str(vac.get('company', '')))}\n"
-        f"📍 <b>Hudud:</b> {html.escape(str(vac.get('location', '')))} | 💰 {html.escape(str(vac.get('salary', '')))}\n"
-        f"🔗 <b>Havola:</b> {html.escape(str(vac.get('url', '')))}"
+        f"🏢 <b>{tr(code, 'card_company')}:</b> {html.escape(str(vac.get('company', '')))}\n"
+        f"📍 <b>{tr(code, 'card_location')}:</b> {html.escape(str(vac.get('location', '')))} | 💰 {html.escape(str(vac.get('salary', '')))}\n"
+        f"🔗 <b>{tr(code, 'card_link')}:</b> {html.escape(str(vac.get('url', '')))}"
     )
 
     if cover_letter_text:
         msg += (
-            f"\n\n✉️ <b>Tayyor Kover-xat ({lang.upper()}):</b>\n"
+            f"\n\n{tr(code, 'card_cl_header', lang=code.upper())}\n"
             f"<pre>{html.escape(cover_letter_text.strip()[:2500])}</pre>"
         )
 
@@ -1487,34 +1909,36 @@ def format_plain_no_ai_vacancy_message(
 
 def format_short_vacancy_message(
     record: dict[str, Any],
+    lang: str | None = "uz",
     cover_letter_text: str | None = None,
     status_note: str | None = None,
 ) -> str:
+    code = normalize_lang(lang)
     ev = record.get("evaluation") or {}
     if ev.get("ai_failed"):
         return format_plain_no_ai_vacancy_message(
             record,
+            lang=code,
             cover_letter_text=cover_letter_text,
             status_note=status_note,
         )
 
     vac = record["vacancy"]
-    lang = record.get("resume_lang", "ru")
     score = int(ev.get("match_score", 75))
     source_tag = vac.get("source", "[hh.uz]")
-    contacts = (ev.get("contact_details") or vac.get("contacts") or "").strip() or "Havola orqali"
+    contacts = (ev.get("contact_details") or vac.get("contacts") or "").strip() or "—"
     short_summary = (ev.get("short_summary") or "").strip()
-    pub_date = vac.get("published_at") or "Yangi"
+    pub_date = vac.get("published_at") or "New"
 
-    badge = "🔥 <b>O‘ta mos vakansiya!</b>" if score >= HIGH_MATCH_THRESHOLD else "📌 <b>Yangi vakansiya</b>"
+    badge = tr(code, "card_high_badge") if score >= HIGH_MATCH_THRESHOLD else tr(code, "card_new_badge")
 
     msg = (
         f"{badge} (<b>{score}%</b>)  <code>{html.escape(source_tag)}</code>\n\n"
         f"🏢 <b>{html.escape(str(vac.get('company', '')))}</b>\n"
         f"💼 <b>{html.escape(str(vac.get('title', '')))}</b>\n"
         f"📍 {html.escape(str(vac.get('location', '')))} | 💰 {html.escape(str(vac.get('salary', '')))} | 📅 {html.escape(str(pub_date))}\n"
-        f"☎️ <b>Aloqa:</b> {html.escape(contacts[:120])}\n"
-        f"🔗 <a href=\"{html.escape(str(vac.get('url', '')))}\">Vakansiyani ochish</a>\n\n"
+        f"☎️ <b>{tr(code, 'card_contacts')}:</b> {html.escape(contacts[:120])}\n"
+        f"🔗 <a href=\"{html.escape(str(vac.get('url', '')))}\">{tr(code, 'card_open_link')}</a>\n\n"
         f"💡 {html.escape(short_summary[:240])}"
     )
 
@@ -1523,7 +1947,7 @@ def format_short_vacancy_message(
         if len(cl_trimmed) > 2500:
             cl_trimmed = cl_trimmed[:2500] + "..."
         msg += (
-            f"\n\n✉️ <b>Tayyor Kover-xat ({lang.upper()} — nusxalash uchun ustiga bosing):</b>\n"
+            f"\n\n{tr(code, 'card_cl_header', lang=code.upper())}\n"
             f"<pre>{html.escape(cl_trimmed)}</pre>"
         )
 
@@ -1534,7 +1958,7 @@ def format_short_vacancy_message(
 
 
 # =====================================================================
-# 11. HAR BIR FOYDALANUVCHI UCHUN PARALLEL QIDIRUV FUNKSIYASI (LIMIT BILAN)
+# 13. HAR BIR FOYDALANUVCHI UCHUN PARALLEL QIDIRUV FUNKSIYASI
 # =====================================================================
 
 def run_user_scan(
@@ -1542,34 +1966,26 @@ def run_user_scan(
     client: genai.Client,
     user_id: str | int,
     notify_start_and_finish: bool = True,
-    trigger_label: str = "Qo‘lda qidiruv",
+    trigger_label: str = "Manual",
 ) -> None:
     uid = str(user_id).strip()
     profile = load_user_profile(uid)
+    lang = normalize_lang(profile.get("ui_lang") or "uz")
 
-    # 1. Bloklanganlikni tekshirish
     if profile.get("is_banned") and not is_admin(uid):
         try:
-            bot.send_message(
-                chat_id=uid,
-                text="🚫 <b>Kechirasiz, sizning profilingiz admin tomonidan bloklangan.</b>",
-                parse_mode="HTML",
-            )
+            bot.send_message(chat_id=uid, text=tr(lang, "banned_msg"), parse_mode="HTML")
         except Exception:
             pass
         return
 
-    # 2. Rezyume yuklanganligini tekshirish
     if not profile.get("has_resume") or not profile.get("resume_text"):
         try:
             bot.send_message(
                 chat_id=uid,
-                text=(
-                    "📄 <b>Iltimos, avval rezyumengizni PDF formatida yuboring!</b>\n\n"
-                    "Rezyumengizni shu chatga <code>.pdf</code> fayl sifatida tashlang."
-                ),
+                text=tr(lang, "need_resume_first"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
+                reply_markup=build_main_reply_keyboard(lang),
             )
         except Exception:
             pass
@@ -1582,9 +1998,9 @@ def run_user_scan(
         try:
             bot.send_message(
                 chat_id=uid,
-                text="⏳ <b>Siz uchun qidiruv allaqachon bajarilmoqda...</b> Iltimos, yakunlanishini kuting.",
+                text=tr(lang, "scan_already_running"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
+                reply_markup=build_main_reply_keyboard(lang),
             )
         except Exception:
             pass
@@ -1593,7 +2009,6 @@ def run_user_scan(
     stop_event.clear()
 
     try:
-        # 3. Kunlik qidiruv limitini (3 marta / Admin uchun cheksiz) tekshirish
         allowed, quota_info = check_and_consume_search_quota(uid)
         if not allowed:
             try:
@@ -1601,7 +2016,7 @@ def run_user_scan(
                     chat_id=uid,
                     text=quota_info,
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(),
+                    reply_markup=build_main_reply_keyboard(lang),
                 )
             except Exception:
                 pass
@@ -1618,14 +2033,15 @@ def run_user_scan(
             try:
                 bot.send_message(
                     chat_id=uid,
-                    text=(
-                        f"🔍 <b>Qidiruv boshlandi...</b> ({html.escape(trigger_label)})\n"
-                        f"📊 <b>Limit holati:</b> {html.escape(quota_info)}\n"
-                        f"🔑 <b>Kalit so‘zlaringiz:</b> <code>{html.escape(kws_preview)}</code>\n"
-                        "⏳ <code>[hh.uz]</code> va <code>[LinkedIn]</code> tekshirilmoqda..."
+                    text=tr(
+                        lang,
+                        "scan_started",
+                        trigger=html.escape(trigger_label),
+                        quota_info=html.escape(quota_info),
+                        keywords=html.escape(kws_preview),
                     ),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(),
+                    reply_markup=build_main_reply_keyboard(lang),
                 )
             except Exception:
                 pass
@@ -1656,33 +2072,33 @@ def run_user_scan(
             try:
                 bot.send_message(
                     chat_id=uid,
-                    text="⏹️ <b>Qidiruv to‘xtatildi.</b>",
+                    text=tr(lang, "scan_stopped"),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(),
+                    reply_markup=build_main_reply_keyboard(lang),
                 )
             except Exception:
                 pass
             return
 
-        diag_text = (
-            f"📊 <b>Qidiruv natijasi:</b>\n"
-            f"• <code>[hh.uz]</code>: Yangi <b>{hh_diag['new_count']}</b> ta "
-            f"(Jami: {hh_diag['unique_found']} | Ko‘rilgan: {hh_diag['skipped_seen']})\n"
-            f"• <code>[LinkedIn]</code>: Yangi <b>{li_diag['new_count']}</b> ta "
-            f"(Jami: {li_diag['unique_found']} | Ko‘rilgan: {li_diag['skipped_seen']})"
-        )
-
         if not all_new_vacancies:
             if notify_start_and_finish:
-                hint = ""
-                if hh_diag["skipped_seen"] > 0 or li_diag["skipped_seen"] > 0:
-                    hint = f"\n\n💡 <i>Avvalgi vakansiyalarni qayta olish uchun <b>[ {BTN_CLEAR_SEEN} ]</b> ni bosing.</i>"
+                hint = tr(lang, "scan_hint_clear") if (hh_diag["skipped_seen"] > 0 or li_diag["skipped_seen"] > 0) else ""
                 try:
                     bot.send_message(
                         chat_id=uid,
-                        text=f"✅ <b>Qidiruv yakunlandi.</b>\n\n{diag_text}{hint}",
+                        text=tr(
+                            lang,
+                            "scan_no_new_results",
+                            hh_new=hh_diag["new_count"],
+                            hh_total=hh_diag["unique_found"],
+                            hh_seen=hh_diag["skipped_seen"],
+                            li_new=li_diag["new_count"],
+                            li_total=li_diag["unique_found"],
+                            li_seen=li_diag["skipped_seen"],
+                            hint=hint,
+                        ),
                         parse_mode="HTML",
-                        reply_markup=build_main_reply_keyboard(),
+                        reply_markup=build_main_reply_keyboard(lang),
                     )
                 except Exception:
                     pass
@@ -1699,20 +2115,20 @@ def run_user_scan(
             batch = all_new_vacancies[start_idx : start_idx + GEMINI_BATCH_SIZE]
 
             if not ai_quota_exhausted:
-                batch_evals, batch_failed = analyze_vacancies_batch_with_gemini(client, batch, resume_text)
+                batch_evals, batch_failed = analyze_vacancies_batch_with_gemini(client, batch, resume_text, user_lang=lang)
                 if batch_failed:
                     ai_quota_exhausted = True
             else:
-                batch_evals = {vac["id"]: build_no_ai_simple_item(vac) for vac in batch}
+                batch_evals = {vac["id"]: build_no_ai_simple_item(vac, default_lang=lang) for vac in batch}
 
             if ai_quota_exhausted and not quota_notice_sent:
                 quota_notice_sent = True
                 try:
                     bot.send_message(
                         chat_id=uid,
-                        text="⚠️ <b>AI limiti tugadi, lekin topilgan vakansiyalar:</b>",
+                        text=tr(lang, "ai_limit_fallback_notice"),
                         parse_mode="HTML",
-                        reply_markup=build_main_reply_keyboard(),
+                        reply_markup=build_main_reply_keyboard(lang),
                     )
                 except Exception:
                     pass
@@ -1725,19 +2141,18 @@ def run_user_scan(
                 if vac_id in seen_jobs:
                     continue
 
-                ev_data = batch_evals.get(vac_id) or build_no_ai_simple_item(vac)
-                resume_lang = ev_data.get("detected_language") or profile.get("resume_lang") or "ru"
+                ev_data = batch_evals.get(vac_id) or build_no_ai_simple_item(vac, default_lang=lang)
 
                 record: dict[str, Any] = {
                     "vacancy": vac,
-                    "resume_lang": resume_lang,
+                    "resume_lang": lang,
                     "evaluation": ev_data,
                     "status": "notified",
                     "updated_at": get_tashkent_now().isoformat(timespec="seconds"),
                 }
 
-                tg_text = format_short_vacancy_message(record)
-                keyboard = build_vacancy_inline_keyboard(vac_id)
+                tg_text = format_short_vacancy_message(record, lang=lang)
+                keyboard = build_vacancy_inline_keyboard(vac_id, lang=lang)
 
                 try:
                     sent_msg = bot.send_message(
@@ -1759,17 +2174,20 @@ def run_user_scan(
                 time.sleep(0.3)
 
         if notify_start_and_finish:
-            stopped_note = " (To‘xtatildi ⏹️)" if stop_event.is_set() else ""
-            mode_note = " (AI tahlilisiz oddiy rejimda)" if ai_quota_exhausted else ""
+            stopped_note = " (⏹️)" if stop_event.is_set() else ""
+            mode_note = " (No-AI)" if ai_quota_exhausted else ""
             try:
                 bot.send_message(
                     chat_id=uid,
-                    text=(
-                        f"✅ <b>Qidiruv yakunlandi!{stopped_note}</b>\n"
-                        f"Jami yuborildi: <b>{sent_count}</b> ta yangi vakansiya{mode_note}."
+                    text=tr(
+                        lang,
+                        "scan_finished",
+                        stopped_note=stopped_note,
+                        count=sent_count,
+                        mode_note=mode_note,
                     ),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(),
+                    reply_markup=build_main_reply_keyboard(lang),
                 )
             except Exception:
                 pass
@@ -1781,7 +2199,7 @@ def run_user_scan(
 
 
 # =====================================================================
-# 12. O'ZBEKISTON VAQTI BILAN (UTC+5: 09:00 va 19:00) BARCHA USERLAR UCHUN JADVAL
+# 14. O'ZBEKISTON VAQTI BILAN (UTC+5: 09:00 va 19:00) BARCHA USERLAR UCHUN JADVAL
 # =====================================================================
 
 def setup_daily_schedule(
@@ -1796,7 +2214,7 @@ def setup_daily_schedule(
                 continue
             threading.Thread(
                 target=run_user_scan,
-                args=(bot, client, uid, True, f"Avtomatik jadval ({slot_time} UZT)"),
+                args=(bot, client, uid, True, f"Auto ({slot_time} UZT)"),
                 daemon=True,
             ).start()
 
@@ -1823,8 +2241,34 @@ def schedule_runner_loop() -> None:
 
 
 # =====================================================================
-# 13. ADMIN PANEL FUNKSIYALARI (BROADCAST, BAN, ADD LIMIT, YANGI USER XABARI)
+# 15. ADMIN FUNKSIYALARI: DIRECT MESSAGE (/send), BROADCAST VA NOTIFICATION
 # =====================================================================
+
+def send_direct_message_from_admin(
+    bot: telebot.TeleBot,
+    target_uid: str,
+    msg_text: str,
+) -> tuple[bool, str]:
+    """
+    Admindan muayyan foydalanuvchiga (`target_uid`) uning tanlagan tiliga mos sarlavha ostida
+    ('📩 Admindan xabar:' / '📩 Сообщение от администратора:' / '📩 Message from Admin:')
+    to'g'ridan-to'g'ri xabar yuboradi.
+    """
+    target_uid = str(target_uid).strip()
+    prof = load_user_profile(target_uid)
+    target_lang = normalize_lang(prof.get("ui_lang") or "uz")
+    header = tr(target_lang, "admin_direct_msg_header")
+
+    try:
+        bot.send_message(
+            chat_id=target_uid,
+            text=f"{header}\n\n{html.escape(msg_text.strip())}",
+            parse_mode="HTML",
+        )
+        return True, f"✅ Xabar foydalanuvchi <code>{html.escape(target_uid)}</code> ga ({target_lang.upper()}) tilida muvaffaqiyatli yetkazildi!"
+    except Exception as exc:
+        return False, f"⚠️ Foydalanuvchi <code>{html.escape(target_uid)}</code> ga xabar yuborishda xatolik: {html.escape(str(exc)[:150])}"
+
 
 def notify_admin_new_user_pdf(
     bot: telebot.TeleBot,
@@ -1834,7 +2278,8 @@ def notify_admin_new_user_pdf(
     profession: str,
     file_name: str,
 ) -> None:
-    """Yangi odam PDF rezyume yuklaganda adminga avtomatik bildirishnoma yuboradi."""
+    if ADMIN_ID == 0:
+        return
     user_label = html.escape(full_name or "Noma'lum")
     uname_part = f" (@{html.escape(username)})" if username else ""
     kb = InlineKeyboardMarkup(row_width=2)
@@ -1859,15 +2304,17 @@ def notify_admin_new_user_pdf(
 
 
 def broadcast_message_to_all_users(bot: telebot.TeleBot, broadcast_text: str) -> None:
-    """Admin yuborgan xabarni barcha ro'yxatdan o'tgan foydalanuvchilarga yetkazadi."""
     uids = list_all_user_ids()
     sent_ok = 0
     failed = 0
     for uid in uids:
+        prof = load_user_profile(uid)
+        u_lang = normalize_lang(prof.get("ui_lang") or "uz")
+        b_header = tr(u_lang, "admin_broadcast_header")
         try:
             bot.send_message(
                 chat_id=uid,
-                text=f"📢 <b>Admin e'loni:</b>\n\n{html.escape(broadcast_text)}",
+                text=f"{b_header}\n\n{html.escape(broadcast_text)}",
                 parse_mode="HTML",
             )
             sent_ok += 1
@@ -1875,24 +2322,56 @@ def broadcast_message_to_all_users(bot: telebot.TeleBot, broadcast_text: str) ->
             failed += 1
         time.sleep(0.1)
 
-    try:
-        bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                f"✅ <b>Broadcast yakunlandi!</b>\n"
-                f"• Yetkazildi: <b>{sent_ok}</b> ta foydalanuvchiga\n"
-                f"• Yetib bormadi: <b>{failed}</b> ta"
-            ),
-            parse_mode="HTML",
-            reply_markup=build_admin_inline_keyboard(),
+    if ADMIN_ID != 0:
+        try:
+            bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    f"✅ <b>Broadcast yakunlandi!</b>\n"
+                    f"• Yetkazildi: <b>{sent_ok}</b> ta foydalanuvchiga\n"
+                    f"• Yetib bormadi: <b>{failed}</b> ta"
+                ),
+                parse_mode="HTML",
+                reply_markup=build_admin_inline_keyboard(),
+            )
+        except Exception:
+            pass
+
+
+# =====================================================================
+# 16. TELEGRAM BOT HANDLERLARI (3-TILLI INTERFEYS + ADMIN PANEL)
+# =====================================================================
+
+def _send_welcome_for_user(bot: telebot.TeleBot, uid: str, first_name: str, profile: dict[str, Any]) -> None:
+    """Tanlangan til bo'yicha foydalanuvchiga xush kelibsiz xabari va mos Reply Keyboard yuboradi."""
+    lang = normalize_lang(profile.get("ui_lang") or "uz")
+    limit_str = tr(lang, "limit_unlimited") if is_admin(uid) else tr(lang, "limit_daily", limit=DAILY_SEARCH_LIMIT)
+
+    if profile.get("has_resume") and profile.get("keywords"):
+        kws_str = ", ".join(profile["keywords"][:8])
+        text = tr(
+            lang,
+            "welcome_with_resume",
+            name=html.escape(first_name),
+            filename=html.escape(profile.get("resume_filename", "resume.pdf")),
+            keywords=html.escape(kws_str),
+            limit_str=limit_str,
         )
-    except Exception:
-        pass
+    else:
+        text = tr(
+            lang,
+            "welcome_no_resume",
+            name=html.escape(first_name),
+            limit_str=limit_str,
+        )
 
+    bot.send_message(
+        chat_id=uid,
+        text=text,
+        parse_mode="HTML",
+        reply_markup=build_main_reply_keyboard(lang),
+    )
 
-# =====================================================================
-# 14. TELEGRAM BOT HANDLERLARI (ADMIN + MULTI-USER)
-# =====================================================================
 
 def _process_uploaded_pdf_in_thread(
     bot: telebot.TeleBot,
@@ -1901,9 +2380,10 @@ def _process_uploaded_pdf_in_thread(
 ) -> None:
     uid = str(message.chat.id)
     profile = update_user_identity(message)
+    lang = normalize_lang(profile.get("ui_lang") or "uz")
 
     if profile.get("is_banned") and not is_admin(uid):
-        bot.reply_to(message, "🚫 Kechirasiz, sizning profilingiz admin tomonidan bloklangan.")
+        bot.reply_to(message, tr(lang, "banned_msg"), parse_mode="HTML")
         return
 
     doc = message.document
@@ -1916,16 +2396,15 @@ def _process_uploaded_pdf_in_thread(
     if not is_pdf:
         bot.reply_to(
             message,
-            "⚠️ <b>Iltimos, rezyumengizni faqat PDF (.pdf) formatida yuboring!</b>\n"
-            "Bu botga faylni o‘qish va sizga mos vakansiyalarni aniq tahlil qilish imkonini beradi.",
+            tr(lang, "upload_pdf_only"),
             parse_mode="HTML",
-            reply_markup=build_main_reply_keyboard(),
+            reply_markup=build_main_reply_keyboard(lang),
         )
         return
 
     wait_msg = bot.reply_to(
         message,
-        "⏳ <b>Rezyumengiz qabul qilindi!</b>\nMatn o‘qilmoqda va sizga mos kalit so‘zlar aniqlanmoqda...",
+        tr(lang, "pdf_received_wait"),
         parse_mode="HTML",
     )
 
@@ -1941,10 +2420,7 @@ def _process_uploaded_pdf_in_thread(
             bot.edit_message_text(
                 chat_id=uid,
                 message_id=wait_msg.message_id,
-                text=(
-                    "⚠️ <b>Ushbu PDF fayldan matn o‘qib bo‘lmadi (skanerlangan rasm bo‘lishi mumkin).</b>\n"
-                    "Iltimos, matni nusxalanadigan (text-based) PDF rezyume yuboring."
-                ),
+                text=tr(lang, "pdf_empty_error"),
                 parse_mode="HTML",
             )
             return
@@ -1961,7 +2437,6 @@ def _process_uploaded_pdf_in_thread(
         profile["awaiting_extra_keywords"] = True
         save_user_profile(uid, profile)
 
-        # Adminga yangi foydalanuvchi rezyume yuklagani haqida avtomatik bildirishnoma yuborish
         if not is_admin(uid):
             notify_admin_new_user_pdf(
                 bot=bot,
@@ -1973,13 +2448,12 @@ def _process_uploaded_pdf_in_thread(
             )
 
         kws_formatted = "\n".join(f"• <code>{html.escape(k)}</code>" for k in keywords)
-        reply_text = (
-            f"✅ <b>Rezyumengiz muvaffaqiyatli o‘qildi!</b> ({html.escape(file_name)})\n"
-            f"👨‍💼 <b>Yo‘nalish:</b> {html.escape(profession)}\n\n"
-            f"🔑 <b>Sizning rezyumengiz asosida quyidagi kalit so‘zlar aniqlandi:</b>\n"
-            f"{kws_formatted}\n\n"
-            "❓ <b>Shular bo‘yicha qidiraylikmi yoki yana boshqa kalit so‘z qo‘shasizmi?</b>\n"
-            "<i>(Quyidagi tugmani bosing yoki qo‘shimcha kalit so‘zlaringizni vergul bilan yozib yuboring)</i>"
+        reply_text = tr(
+            lang,
+            "pdf_analyzed_keywords",
+            filename=html.escape(file_name),
+            profession=html.escape(profession),
+            keywords_list=kws_formatted,
         )
 
         bot.edit_message_text(
@@ -1987,7 +2461,7 @@ def _process_uploaded_pdf_in_thread(
             message_id=wait_msg.message_id,
             text=reply_text,
             parse_mode="HTML",
-            reply_markup=build_keyword_confirm_inline_keyboard(),
+            reply_markup=build_keyword_confirm_inline_keyboard(lang),
         )
         print(f"[USER {uid}] PDF rezyume yuklandi ({file_name}) -> {len(keywords)} ta kalit so'z aniqlandi.", flush=True)
 
@@ -1997,7 +2471,7 @@ def _process_uploaded_pdf_in_thread(
             bot.edit_message_text(
                 chat_id=uid,
                 message_id=wait_msg.message_id,
-                text=f"⚠️ Faylni o‘qishda xatolik yuz berdi: {html.escape(str(exc)[:150])}. Iltimos, qaytadan PDF yuboring.",
+                text=f"⚠️ Error: {html.escape(str(exc)[:150])}",
                 parse_mode="HTML",
             )
         except Exception:
@@ -2009,16 +2483,13 @@ def register_bot_handlers(
     client: genai.Client,
 ) -> None:
 
-    # 1. /admin BUYRUG'I VA HUQUQNI TEKSHIRISH
+    # 1. /admin BUYRUG'I
     @bot.message_handler(commands=["admin"])
     def handle_admin_command(message: Message) -> None:
         try:
             sender_id = message.from_user.id if message.from_user else message.chat.id
-            if sender_id != ADMIN_ID:
-                bot.reply_to(
-                    message,
-                    "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q",
-                )
+            if not is_admin(sender_id):
+                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
                 return
 
             ADMIN_PENDING_ACTION.pop(ADMIN_ID, None)
@@ -2031,7 +2502,8 @@ def register_bot_handlers(
                 f"• <b>Bugungi faol qidiruvlar:</b> <b>{stats['today_searches']}</b> ta ({stats['active_users_today']} ta faol user)\n"
                 f"• <b>Bloklanganlar (Ban):</b> <b>{stats['banned_users']}</b> ta\n\n"
                 "💡 <b>Tezkor buyruqlar:</b>\n"
-                "• <code>/broadcast Matn</code> — Barchaga xabar yuborish\n"
+                "• <code>/send USER_ID Matn</code> — Foydalanuvchiga shaxsiy xabar yuborish\n"
+                "• <code>/broadcast Matn</code> — Barchaga umumiy e'lon yuborish\n"
                 "• <code>/ban USER_ID</code> — Foydalanuvchini bloklash\n"
                 "• <code>/unban USER_ID</code> — Blokdan chiqarish\n"
                 "• <code>/addlimit USER_ID 5</code> — Qo‘shimcha qidiruv limiti berish"
@@ -2045,22 +2517,39 @@ def register_bot_handlers(
         except Exception as exc:
             print(f"[!] /admin xatoligi: {exc}", flush=True)
 
-    @bot.message_handler(commands=["ban", "unban", "addlimit", "broadcast"])
+    # 2. ADMIN BUYRUQLARI: /send, /broadcast, /ban, /unban, /addlimit
+    @bot.message_handler(commands=["send", "ban", "unban", "addlimit", "broadcast"])
     def handle_admin_quick_commands(message: Message) -> None:
         try:
             sender_id = message.from_user.id if message.from_user else message.chat.id
-            if sender_id != ADMIN_ID:
+            if not is_admin(sender_id):
                 bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
                 return
 
-            parts = (message.text or "").strip().split(maxsplit=2)
+            raw = (message.text or "").strip()
+            parts = raw.split(maxsplit=2)
             cmd = parts[0].lower().lstrip("/")
+
+            if cmd == "send":
+                if len(parts) < 3:
+                    bot.reply_to(
+                        message,
+                        "⚠️ <b>Format:</b> <code>/send USER_ID Xabar matni</code>\n"
+                        "<i>Masalan: /send 123456789 Assalomu alaykum, profilingiz tasdiqlandi</i>",
+                        parse_mode="HTML",
+                    )
+                    return
+                target_uid = parts[1].strip()
+                msg_body = parts[2].strip()
+                _, result_note = send_direct_message_from_admin(bot, target_uid, msg_body)
+                bot.reply_to(message, result_note, parse_mode="HTML", reply_markup=build_admin_inline_keyboard())
+                return
 
             if cmd == "broadcast":
                 if len(parts) < 2:
                     bot.reply_to(message, "⚠️ Format: <code>/broadcast E'lon matni</code>", parse_mode="HTML")
                     return
-                b_text = (message.text or "").strip().split(maxsplit=1)[1]
+                b_text = raw.split(maxsplit=1)[1]
                 threading.Thread(
                     target=broadcast_message_to_all_users,
                     args=(bot, b_text),
@@ -2074,13 +2563,14 @@ def register_bot_handlers(
 
             target_uid = parts[1].strip()
             prof = load_user_profile(target_uid)
+            u_lang = normalize_lang(prof.get("ui_lang") or "uz")
 
             if cmd == "ban":
                 prof["is_banned"] = True
                 save_user_profile(target_uid, prof)
                 bot.reply_to(message, f"🚫 Foydalanuvchi <code>{target_uid}</code> bloklandi (Ban).", parse_mode="HTML")
                 try:
-                    bot.send_message(target_uid, "🚫 Sizning profilingiz admin tomonidan bloklandi.")
+                    bot.send_message(target_uid, tr(u_lang, "banned_msg"), parse_mode="HTML")
                 except Exception:
                     pass
             elif cmd == "unban":
@@ -2088,7 +2578,7 @@ def register_bot_handlers(
                 save_user_profile(target_uid, prof)
                 bot.reply_to(message, f"✅ Foydalanuvchi <code>{target_uid}</code> blokdan chiqarildi.", parse_mode="HTML")
                 try:
-                    bot.send_message(target_uid, "✅ Sizning profilingiz admin tomonidan blokdan chiqarildi!")
+                    bot.send_message(target_uid, tr(u_lang, "admin_unbanned_notice"), parse_mode="HTML")
                 except Exception:
                     pass
             elif cmd == "addlimit":
@@ -2104,7 +2594,7 @@ def register_bot_handlers(
                 try:
                     bot.send_message(
                         target_uid,
-                        f"🎁 Admin sizga <b>+{add_cnt} ta</b> qo‘shimcha qidiruv limiti taqdim etdi!",
+                        tr(u_lang, "admin_bonus_gift", count=add_cnt),
                         parse_mode="HTML",
                     )
                 except Exception:
@@ -2112,6 +2602,7 @@ def register_bot_handlers(
         except Exception as exc:
             print(f"[!] Admin buyruq xatoligi: {exc}", flush=True)
 
+    # 3. /start VA BIRINCHI KIRISHDA TIL TANLASH
     @bot.message_handler(commands=["start", "help"])
     def handle_start(message: Message) -> None:
         try:
@@ -2119,39 +2610,40 @@ def register_bot_handlers(
             profile = update_user_identity(message)
 
             if profile.get("is_banned") and not is_admin(uid):
-                bot.send_message(uid, "🚫 Kechirasiz, sizning profilingiz admin tomonidan bloklangan.")
+                lang = normalize_lang(profile.get("ui_lang") or "uz")
+                bot.send_message(uid, tr(lang, "banned_msg"), parse_mode="HTML")
                 return
 
-            first_name = html.escape(message.from_user.first_name if message.from_user else "Foydalanuvchi")
-            limit_str = "Cheksiz (Admin 👑)" if is_admin(uid) else f"Kuniga {DAILY_SEARCH_LIMIT} marta"
-
-            if profile.get("has_resume") and profile.get("keywords"):
-                kws_str = ", ".join(profile["keywords"][:8])
-                text = (
-                    f"👋 Assalomu alaykum, <b>{first_name}</b>!\n\n"
-                    f"📄 <b>Yuklangan rezyumengiz:</b> <code>{html.escape(profile.get('resume_filename', 'resume.pdf'))}</code>\n"
-                    f"🔑 <b>Faol kalit so‘zlaringiz:</b> <code>{html.escape(kws_str)}</code>\n"
-                    f"📊 <b>Kunlik qidiruv limiti:</b> {limit_str}\n\n"
-                    "• Vakansiyalarni qidirish uchun <b>[ 🔍 Hozir qidirish ]</b> tugmasini bosing.\n"
-                    "• Yangi rezyume yuklash uchun <b>PDF (.pdf)</b> faylingizni shu chatga yuboring."
+            # Agar foydalanuvchi profilida til hali tanlanmagan bo'lsa -> 3 tilli Inline tugma chiqadi
+            if not profile.get("ui_lang"):
+                bot.send_message(
+                    chat_id=uid,
+                    text=TRANSLATIONS["uz"]["choose_lang_prompt"],
+                    parse_mode="HTML",
+                    reply_markup=build_language_selection_inline_keyboard(),
                 )
-            else:
-                text = (
-                    f"👋 Assalomu alaykum, <b>{first_name}</b>! Shaxsiy AI Ish Qidirish Botiga xush kelibsiz.\n\n"
-                    "📄 <b>Iltimos, rezyumengizni PDF formatida yuboring.</b>\n\n"
-                    "Rezyumengizni faqat <code>.pdf</code> formatida yuklaganingizdan so‘ng, "
-                    "Gemini sun'iy intellekti uni o‘qib chiqib, sizga mos ish qidirish kalit so‘zlarini avtomatik aniqlab beradi "
-                    f"(Kunlik bepul qidiruv limiti: <b>{limit_str}</b>)."
-                )
+                return
 
-            bot.send_message(
-                chat_id=uid,
-                text=text,
-                parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
-            )
+            first_name = message.from_user.first_name if message.from_user else "Foydalanuvchi"
+            _send_welcome_for_user(bot, uid, first_name, profile)
         except Exception as exc:
             print(f"[!] /start xatoligi: {exc}", flush=True)
+
+    # 4. TILNI O'ZGARTIRISH TUGMASI YOKI /language BUYRUG'I
+    @bot.message_handler(
+        func=lambda m: (m.text or "").strip() in ALL_CHANGE_LANG_BTNS
+        or any(x in (m.text or "") for x in ("Tilni o‘zgartirish", "Tilni o'zgartirish", "Сменить язык", "Change language"))
+    )
+    def handle_change_language(message: Message) -> None:
+        try:
+            bot.send_message(
+                chat_id=message.chat.id,
+                text=TRANSLATIONS["uz"]["choose_lang_prompt"],
+                parse_mode="HTML",
+                reply_markup=build_language_selection_inline_keyboard(),
+            )
+        except Exception as exc:
+            print(f"[!] Tilni o'zgartirishda xatolik: {exc}", flush=True)
 
     @bot.message_handler(content_types=["document"])
     def handle_document(message: Message) -> None:
@@ -2164,46 +2656,55 @@ def register_bot_handlers(
     @bot.message_handler(content_types=["photo", "audio", "video", "voice"])
     def handle_non_pdf_media(message: Message) -> None:
         try:
+            uid = str(message.chat.id)
+            prof = load_user_profile(uid)
+            lang = normalize_lang(prof.get("ui_lang") or "uz")
             bot.reply_to(
                 message,
-                "⚠️ <b>Iltimos, rezyumengizni faqat PDF (.pdf) formatida yuboring!</b>\n"
-                "Rasm yoki boshqa formatlar qabul qilinmaydi.",
+                tr(lang, "upload_pdf_only"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
+                reply_markup=build_main_reply_keyboard(lang),
             )
         except Exception:
             pass
 
-    @bot.message_handler(func=lambda m: "Rezyume yuklash" in (m.text or ""))
+    @bot.message_handler(
+        func=lambda m: (m.text or "").strip() in ALL_UPLOAD_RESUME_BTNS
+        or any(x in (m.text or "") for x in ("Rezyume yuklash", "Загрузить резюме", "Upload Resume"))
+    )
     def handle_upload_resume_btn(message: Message) -> None:
         try:
+            uid = str(message.chat.id)
+            prof = load_user_profile(uid)
+            lang = normalize_lang(prof.get("ui_lang") or "uz")
             bot.send_message(
-                chat_id=message.chat.id,
-                text=(
-                    "📄 <b>Iltimos, rezyumengizni PDF formatida yuboring.</b>\n\n"
-                    "Pastdagi 📎 (skrepka) tugmasini bosib, kompyuter yoki telefoningizdan "
-                    "<code>.pdf</code> formatdagi rezyume faylingizni yuboring."
-                ),
+                chat_id=uid,
+                text=tr(lang, "upload_pdf_prompt"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
+                reply_markup=build_main_reply_keyboard(lang),
             )
         except Exception:
             pass
 
-    @bot.message_handler(func=lambda m: "Kalit so‘zlarim" in (m.text or "") or "Kalit so'zlarim" in (m.text or ""))
+    @bot.message_handler(
+        func=lambda m: (m.text or "").strip() in ALL_MY_KEYWORDS_BTNS
+        or any(x in (m.text or "") for x in ("Kalit so‘zlarim", "Kalit so'zlarim", "Мои ключевые слова", "My Keywords"))
+    )
     def handle_my_keywords_btn(message: Message) -> None:
         try:
             uid = str(message.chat.id)
             profile = load_user_profile(uid)
+            lang = normalize_lang(profile.get("ui_lang") or "uz")
+
             if profile.get("is_banned") and not is_admin(uid):
-                bot.send_message(uid, "🚫 Kechirasiz, sizning profilingiz admin tomonidan bloklangan.")
+                bot.send_message(uid, tr(lang, "banned_msg"), parse_mode="HTML")
                 return
             if not profile.get("has_resume"):
                 bot.send_message(
                     chat_id=uid,
-                    text="📄 Iltimos, avval rezyumengizni PDF formatida yuboring.",
+                    text=tr(lang, "need_resume_first"),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(),
+                    reply_markup=build_main_reply_keyboard(lang),
                 )
                 return
 
@@ -2214,90 +2715,94 @@ def register_bot_handlers(
 
             bot.send_message(
                 chat_id=uid,
-                text=(
-                    f"🔑 <b>Sizning joriy qidiruv kalit so‘zlaringiz:</b>\n{kws_formatted}\n\n"
-                    "❓ Shular bo‘yicha qidiraylikmi yoki yana boshqa kalit so‘z qo‘shasizmi?\n"
-                    "<i>(Yangi kalit so‘z qo‘shish uchun ularni vergul bilan yozib yuboring)</i>"
-                ),
+                text=tr(lang, "my_keywords_msg", keywords_list=kws_formatted),
                 parse_mode="HTML",
-                reply_markup=build_keyword_confirm_inline_keyboard(),
+                reply_markup=build_keyword_confirm_inline_keyboard(lang),
             )
         except Exception as exc:
             print(f"[!] Kalit so'zlarim tugmasida xatolik: {exc}", flush=True)
 
-    @bot.message_handler(func=lambda m: "Hozir qidirish" in (m.text or "") or (m.text or "").strip() == "/scan")
+    @bot.message_handler(
+        func=lambda m: (m.text or "").strip() in ALL_SEARCH_NOW_BTNS
+        or any(x in (m.text or "") for x in ("Hozir qidirish", "Искать сейчас", "Search now"))
+    )
     def handle_search_now(message: Message) -> None:
         try:
             uid = str(message.chat.id)
+            prof = load_user_profile(uid)
+            lang = normalize_lang(prof.get("ui_lang") or "uz")
             threading.Thread(
                 target=run_user_scan,
-                args=(bot, client, uid, True, "Qo‘lda: 🔍 Hozir qidirish"),
+                args=(bot, client, uid, True, tr(lang, "btn_search_now")),
                 daemon=True,
             ).start()
         except Exception as exc:
             print(f"[!] Hozir qidirish tugmasida xatolik: {exc}", flush=True)
 
-    @bot.message_handler(func=lambda m: "Tarixni tozalash" in (m.text or "") or (m.text or "").strip() == "/clear")
+    @bot.message_handler(
+        func=lambda m: (m.text or "").strip() in ALL_CLEAR_SEEN_BTNS
+        or any(x in (m.text or "") for x in ("Tarixni tozalash", "Очистить историю", "Clear History"))
+    )
     def handle_clear_seen(message: Message) -> None:
         try:
             uid = str(message.chat.id)
+            prof = load_user_profile(uid)
+            lang = normalize_lang(prof.get("ui_lang") or "uz")
             old_count = len(load_user_seen_jobs(uid))
             clear_user_seen_jobs(uid)
             bot.send_message(
                 chat_id=uid,
-                text=(
-                    f"🗑️ <b>Sizning qidiruv tarixingiz tozalandi!</b> ({old_count} ta yozuv o‘chirildi).\n"
-                    f"Endi <b>[ {BTN_SEARCH_NOW} ]</b> ni bossangiz, barcha yangi vakansiyalar qaytadan keladi."
-                ),
+                text=tr(lang, "history_cleared", count=old_count),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
+                reply_markup=build_main_reply_keyboard(lang),
             )
         except Exception as exc:
             print(f"[!] Tarixni tozalashda xatolik: {exc}", flush=True)
 
-    @bot.message_handler(func=lambda m: "Qidiruvni to" in (m.text or ""))
+    @bot.message_handler(
+        func=lambda m: (m.text or "").strip() in ALL_STOP_SEARCH_BTNS
+        or any(x in (m.text or "") for x in ("Qidiruvni to", "Остановить поиск", "Stop Search"))
+    )
     def handle_stop_search(message: Message) -> None:
         try:
             uid = str(message.chat.id)
             get_user_stop_event(uid).set()
             profile = load_user_profile(uid)
+            lang = normalize_lang(profile.get("ui_lang") or "uz")
             profile["auto_schedule_enabled"] = False
             save_user_profile(uid, profile)
             bot.send_message(
                 chat_id=uid,
-                text=(
-                    "⏹️ <b>Qidiruv to‘xtatildi va avto-jadval pauza qilindi!</b>\n"
-                    f"Qayta yoqish uchun <code>{BTN_RESUME_SCHEDULE}</code> tugmasini bosing."
-                ),
+                text=tr(lang, "scan_stopped"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
+                reply_markup=build_main_reply_keyboard(lang),
             )
         except Exception as exc:
             print(f"[!] Qidiruvni to'xtatish tugmasida xatolik: {exc}", flush=True)
 
-    @bot.message_handler(func=lambda m: "Qayta faollashtirish" in (m.text or ""))
+    @bot.message_handler(
+        func=lambda m: (m.text or "").strip() in ALL_RESUME_SCHED_BTNS
+        or any(x in (m.text or "") for x in ("Qayta faollashtirish", "Возобновить авто-поиск", "Resume Auto-Search"))
+    )
     def handle_resume_schedule(message: Message) -> None:
         try:
             uid = str(message.chat.id)
             get_user_stop_event(uid).clear()
             profile = load_user_profile(uid)
+            lang = normalize_lang(profile.get("ui_lang") or "uz")
             profile["auto_schedule_enabled"] = True
             save_user_profile(uid, profile)
             bot.send_message(
                 chat_id=uid,
-                text="▶️ <b>Avtomatik rejim (09:00 va 19:00 UZT) siz uchun qayta faollashtirildi!</b>",
+                text=tr(lang, "schedule_resumed"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
+                reply_markup=build_main_reply_keyboard(lang),
             )
         except Exception as exc:
             print(f"[!] Qayta faollashtirish tugmasida xatolik: {exc}", flush=True)
 
     @bot.message_handler(content_types=["text"])
     def handle_text_input(message: Message) -> None:
-        """
-        1. Agar Admin maxsus rejimda (broadcast, ban, addlimit) matn yozayotgan bo'lsa, uni bajaradi.
-        2. Aks holda foydalanuvchi o'zidan qo'shimcha kalit so'z yozgan bo'lsa, uni qabul qilib qidiruvni boshlaydi.
-        """
         try:
             uid = str(message.chat.id)
             sender_id = message.from_user.id if message.from_user else message.chat.id
@@ -2305,9 +2810,10 @@ def register_bot_handlers(
             if not raw_text or raw_text.startswith("/"):
                 return
 
-            # A) Admin interaktiv amali
-            if sender_id == ADMIN_ID and ADMIN_PENDING_ACTION.get(ADMIN_ID):
+            # A) Admin interaktiv amali ("broadcast", "sendmsg", "ban", "addlimit")
+            if is_admin(sender_id) and ADMIN_PENDING_ACTION.get(ADMIN_ID):
                 pending_mode = ADMIN_PENDING_ACTION.pop(ADMIN_ID, None)
+
                 if pending_mode == "broadcast":
                     bot.reply_to(message, "📢 Xabar barcha foydalanuvchilarga yuborilmoqda...")
                     threading.Thread(
@@ -2315,6 +2821,22 @@ def register_bot_handlers(
                         args=(bot, raw_text),
                         daemon=True,
                     ).start()
+                    return
+
+                if pending_mode == "sendmsg":
+                    parts = raw_text.split(maxsplit=1)
+                    if len(parts) < 2:
+                        bot.reply_to(
+                            message,
+                            "⚠️ <b>ID raqam va xabar matnini bo‘sh joy bilan ajratib yozing:</b>\n"
+                            "<i>Masalan:</i> <code>123456789 Assalomu alaykum, profilingiz tasdiqlandi</code>",
+                            parse_mode="HTML",
+                            reply_markup=build_admin_inline_keyboard(),
+                        )
+                        return
+                    target_uid, msg_body = parts[0].strip(), parts[1].strip()
+                    _, res_note = send_direct_message_from_admin(bot, target_uid, msg_body)
+                    bot.reply_to(message, res_note, parse_mode="HTML", reply_markup=build_admin_inline_keyboard())
                     return
 
                 if pending_mode == "ban":
@@ -2336,6 +2858,7 @@ def register_bot_handlers(
                     target_uid = parts[0].strip()
                     add_cnt = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 3
                     prof = load_user_profile(target_uid)
+                    u_lang = normalize_lang(prof.get("ui_lang") or "uz")
                     prof["bonus_searches"] = int(prof.get("bonus_searches", 0)) + add_cnt
                     save_user_profile(target_uid, prof)
                     bot.reply_to(
@@ -2348,25 +2871,27 @@ def register_bot_handlers(
                     try:
                         bot.send_message(
                             target_uid,
-                            f"🎁 Admin sizga <b>+{add_cnt} ta</b> qo‘shimcha qidiruv limiti taqdim etdi!",
+                            tr(u_lang, "admin_bonus_gift", count=add_cnt),
                             parse_mode="HTML",
                         )
                     except Exception:
                         pass
                     return
 
-            # B) Oddiy foydalanuvchi (yoki Admin) kalit so'z qo'shishi
+            # B) Foydalanuvchi kalit so'z qo'shishi
             profile = load_user_profile(uid)
+            lang = normalize_lang(profile.get("ui_lang") or "uz")
+
             if profile.get("is_banned") and not is_admin(uid):
-                bot.send_message(uid, "🚫 Kechirasiz, sizning profilingiz admin tomonidan bloklangan.")
+                bot.send_message(uid, tr(lang, "banned_msg"), parse_mode="HTML")
                 return
 
             if not profile.get("has_resume"):
                 bot.send_message(
                     chat_id=uid,
-                    text="📄 <b>Iltimos, avval rezyumengizni PDF formatida yuboring.</b>",
+                    text=tr(lang, "need_resume_first"),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(),
+                    reply_markup=build_main_reply_keyboard(lang),
                 )
                 return
 
@@ -2390,18 +2915,14 @@ def register_bot_handlers(
             kws_str = ", ".join(existing_kws)
             bot.send_message(
                 chat_id=uid,
-                text=(
-                    f"✅ <b>Yangi kalit so‘zlar qo‘shildi!</b>\n"
-                    f"🔑 <b>Yangilangan ro‘yxat:</b> <code>{html.escape(kws_str)}</code>\n\n"
-                    "🚀 Ushbu kalit so‘zlar asosida vakansiyalarni qidirish boshlanmoqda..."
-                ),
+                text=tr(lang, "keywords_added", keywords=html.escape(kws_str)),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(),
+                reply_markup=build_main_reply_keyboard(lang),
             )
 
             threading.Thread(
                 target=run_user_scan,
-                args=(bot, client, uid, True, "Yangilangan kalit so‘zlar bo‘yicha"),
+                args=(bot, client, uid, True, tr(lang, "btn_search_now")),
                 daemon=True,
             ).start()
         except Exception as exc:
@@ -2414,24 +2935,47 @@ def register_bot_handlers(
             sender_id = call.from_user.id if call.from_user else call.message.chat.id
             data = call.data or ""
             if "|" not in data:
-                bot.answer_callback_query(call.id, "Noma'lum buyruq.")
+                bot.answer_callback_query(call.id)
                 return
 
             action, param = data.split("|", 1)
 
+            # 0. TIL TANLASH TUGMALARI (set_lang|uz, set_lang|ru, set_lang|en)
+            if action == "set_lang":
+                chosen_lang = normalize_lang(param)
+                profile = load_user_profile(uid)
+                profile["ui_lang"] = chosen_lang
+                save_user_profile(uid, profile)
+
+                bot.answer_callback_query(call.id, "✅")
+                try:
+                    bot.edit_message_text(
+                        chat_id=uid,
+                        message_id=call.message.message_id,
+                        text=tr(chosen_lang, "lang_saved"),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+                first_name = call.from_user.first_name if call.from_user else (profile.get("full_name") or "User")
+                _send_welcome_for_user(bot, uid, first_name, profile)
+                return
+
             # 1. ADMIN PANEL TUGMALARI
             if action in ("admin", "adm_quick_lim", "adm_quick_ban"):
-                if sender_id != ADMIN_ID:
+                if not is_admin(sender_id):
                     bot.answer_callback_query(call.id, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q", show_alert=True)
                     return
 
                 if action == "adm_quick_lim":
                     prof = load_user_profile(param)
+                    u_lang = normalize_lang(prof.get("ui_lang") or "uz")
                     prof["bonus_searches"] = int(prof.get("bonus_searches", 0)) + 3
                     save_user_profile(param, prof)
                     bot.answer_callback_query(call.id, f"+3 limit berildi (User {param}) ✅", show_alert=True)
                     try:
-                        bot.send_message(param, "🎁 Admin sizga <b>+3 ta</b> qo‘shimcha qidiruv limiti berdi!", parse_mode="HTML")
+                        bot.send_message(param, tr(u_lang, "admin_bonus_gift", count=3), parse_mode="HTML")
                     except Exception:
                         pass
                     return
@@ -2469,14 +3013,15 @@ def register_bot_handlers(
                     today = get_today_str()
                     for idx, u in enumerate(uids[:30], start=1):
                         p = load_user_profile(u)
-                        name = html.escape(p.get("full_name") or "Foydalanuvchi")
+                        name = html.escape(p.get("full_name") or "User")
                         uname = f" (@{html.escape(p['username'])})" if p.get("username") else ""
+                        u_lang = (p.get("ui_lang") or "uz").upper()
                         used = p.get("daily_search_count", 0) if p.get("daily_search_date") == today else 0
                         bonus = p.get("bonus_searches", 0)
                         ban_tag = " 🚫[BAN]" if p.get("is_banned") else ""
                         res_tag = "✅PDF" if p.get("has_resume") else "➖"
                         lines.append(
-                            f"{idx}. <b>{name}</b>{uname} — ID: <code>{u}</code> | {res_tag} | "
+                            f"{idx}. <b>{name}</b>{uname} — ID: <code>{u}</code> [{u_lang}] | {res_tag} | "
                             f"Bugun: {used}/{DAILY_SEARCH_LIMIT} (+{bonus}){ban_tag}"
                         )
                     bot.answer_callback_query(call.id)
@@ -2485,6 +3030,20 @@ def register_bot_handlers(
                         text="\n".join(lines)[:4000],
                         parse_mode="HTML",
                         reply_markup=build_admin_inline_keyboard(),
+                    )
+                    return
+
+                if param == "sendmsg":
+                    ADMIN_PENDING_ACTION[ADMIN_ID] = "sendmsg"
+                    bot.answer_callback_query(call.id)
+                    bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=(
+                            "✉️ <b>Xabar yubormoqchi bo‘lgan foydalanuvchi ID raqami va xabar matnini yozib yuboring:</b>\n"
+                            "<i>Masalan:</i> <code>123456789 Assalomu alaykum, profilingiz tasdiqlandi</code>\n"
+                            "<i>(Yoki to‘g‘ridan-to‘g‘ri</i> <code>/send USER_ID Matn</code> <i>buyrug‘ini ishlating)</i>"
+                        ),
+                        parse_mode="HTML",
                     )
                     return
 
@@ -2527,17 +3086,18 @@ def register_bot_handlers(
             # 2. FOYDALANUVCHI KALIT SO'Z TASDIQLASH TUGMALARI
             if action == "kw_action":
                 profile = load_user_profile(uid)
+                lang = normalize_lang(profile.get("ui_lang") or "uz")
                 if profile.get("is_banned") and not is_admin(uid):
-                    bot.answer_callback_query(call.id, "Profilingiz bloklangan 🚫", show_alert=True)
+                    bot.answer_callback_query(call.id, "🚫", show_alert=True)
                     return
 
                 if param == "confirm":
                     profile["awaiting_extra_keywords"] = False
                     save_user_profile(uid, profile)
-                    bot.answer_callback_query(call.id, "Qidiruv boshlanmoqda! 🔍")
+                    bot.answer_callback_query(call.id, "🔍")
                     threading.Thread(
                         target=run_user_scan,
-                        args=(bot, client, uid, True, "Tasdiqlangan kalit so‘zlar bo‘yicha"),
+                        args=(bot, client, uid, True, tr(lang, "btn_kw_confirm")),
                         daemon=True,
                     ).start()
                     return
@@ -2545,15 +3105,12 @@ def register_bot_handlers(
                 if param == "add":
                     profile["awaiting_extra_keywords"] = True
                     save_user_profile(uid, profile)
-                    bot.answer_callback_query(call.id, "Kalit so'zlarni yozing ✍️")
+                    bot.answer_callback_query(call.id, "✍️")
                     bot.send_message(
                         chat_id=uid,
-                        text=(
-                            "✍️ <b>Qo‘shmoqchi bo‘lgan yangi kalit so‘zlaringizni vergul bilan ajratib yozib yuboring:</b>\n"
-                            "<i>Masalan: Инженер ПТО, ЭОМ, Проектировщик, Electrical Engineer</i>"
-                        ),
+                        text=tr(lang, "enter_extra_keywords"),
                         parse_mode="HTML",
-                        reply_markup=build_main_reply_keyboard(),
+                        reply_markup=build_main_reply_keyboard(lang),
                     )
                     return
 
@@ -2561,36 +3118,39 @@ def register_bot_handlers(
             vac_id = param
 
             def _handle_vacancy_action() -> None:
+                user_profile = load_user_profile(uid)
+                lang = normalize_lang(user_profile.get("ui_lang") or "uz")
                 state = load_user_state(uid)
                 record = state.get(vac_id)
                 if not record:
-                    bot.answer_callback_query(call.id, "Vakansiya ma'lumotlari topilmadi.", show_alert=True)
+                    bot.answer_callback_query(call.id, "Not found", show_alert=True)
                     return
 
                 if action in ("write_cl", "view"):
-                    bot.answer_callback_query(call.id, "✍️ Kover-xat tayyorlanmoqda...")
-                    user_profile = load_user_profile(uid)
+                    bot.answer_callback_query(call.id, tr(lang, "cl_generating_toast"))
 
                     cover_letter = record.get("generated_cover_letter")
                     used_ai = True
-                    if not cover_letter:
+                    if not cover_letter or record.get("cl_lang") != lang:
                         cover_letter, used_ai = generate_cover_letter_on_demand(client, record, user_profile)
                         record["generated_cover_letter"] = cover_letter
+                        record["cl_lang"] = lang
                         record["status"] = "cover_letter_generated"
                         record["updated_at"] = get_tashkent_now().isoformat(timespec="seconds")
                         state[vac_id] = record
                         save_user_state(uid, state)
 
-                    note = None if used_ai else "ℹ️ <i>AI limiti tugagani sababli tayyor shablon kover-xat qo‘yildi.</i>"
+                    note = None if used_ai else tr(lang, "card_cl_template_note")
                     updated_text = format_short_vacancy_message(
                         record,
+                        lang=lang,
                         cover_letter_text=cover_letter,
                         status_note=note,
                     )
                     skip_only_kb = InlineKeyboardMarkup(row_width=1)
                     skip_only_kb.add(
                         InlineKeyboardButton(
-                            text="❌ Kerak emas",
+                            text=tr(lang, "btn_skip"),
                             callback_data=f"skip|{vac_id}",
                         )
                     )
@@ -2612,7 +3172,8 @@ def register_bot_handlers(
 
                     dismissed_text = format_short_vacancy_message(
                         record,
-                        status_note="❌ <b>Kerak emas deb belgilandi</b>",
+                        lang=lang,
+                        status_note=tr(lang, "card_dismissed"),
                     )
                     bot.edit_message_text(
                         chat_id=uid,
@@ -2622,7 +3183,7 @@ def register_bot_handlers(
                         reply_markup=None,
                         disable_web_page_preview=True,
                     )
-                    bot.answer_callback_query(call.id, "O'tkazib yuborildi ❌")
+                    bot.answer_callback_query(call.id, tr(lang, "skip_toast"))
 
             threading.Thread(target=_handle_vacancy_action, daemon=True).start()
 
@@ -2631,12 +3192,12 @@ def register_bot_handlers(
 
 
 # =====================================================================
-# 15. ASOSIY ISHGA TUSHIRISH FUNKSIYASI (MAIN)
+# 17. ASOSIY ISHGA TUSHIRISH FUNKSIYASI (MAIN)
 # =====================================================================
 
 def main() -> None:
     print("=" * 88, flush=True)
-    print(" KO'P FOYDALANUVCHILI AI ISH QIDIRISH BOTI + ADMIN PANELI (ADMIN_ID = 608221268)", flush=True)
+    print(" 3-TILLI (UZ/RU/EN) MULTI-USER AI ISH QIDIRISH BOTI + ADMIN PANELI", flush=True)
     print(f" Ishchi papka   : {BASE_DIR}", flush=True)
     print(f" Userlar bazasi : {USERS_DIR}", flush=True)
     print(f" Admin ID       : {ADMIN_ID}", flush=True)
@@ -2657,22 +3218,26 @@ def main() -> None:
     sched_thread = threading.Thread(target=schedule_runner_loop, daemon=True)
     sched_thread.start()
 
-    try:
-        bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                "👑 <b>Admin tizimi bilan jihozlangan Multi-User AI Bot ishga tushdi!</b>\n\n"
-                f"• <b>Sizning Admin ID:</b> <code>{ADMIN_ID}</code> (Cheksiz limit)\n"
-                f"• <b>Oddiy foydalanuvchilar limiti:</b> Kuniga {DAILY_SEARCH_LIMIT} marta\n"
-                "• Admin panelni ochish uchun: <b>/admin</b> buyrug‘ini bosing."
-            ),
-            parse_mode="HTML",
-            reply_markup=build_main_reply_keyboard(),
-        )
-    except Exception as exc:
-        print(f"  [!] Admin xabarini yuborishda xatolik: {exc}", flush=True)
+    if ADMIN_ID != 0:
+        try:
+            admin_prof = load_user_profile(ADMIN_ID)
+            admin_lang = normalize_lang(admin_prof.get("ui_lang") or "uz")
+            bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "👑 <b>3-Tilli (UZ/RU/EN) Multi-User AI Bot + Admin `/send` tizimi ishga tushdi!</b>\n\n"
+                    f"• <b>Admin ID:</b> <code>{ADMIN_ID}</code>\n"
+                    "• <b>Shaxsiy xabar yuborish:</b> <code>/send USER_ID Matn</code> yoki <b>/admin</b> panelidagi "
+                    "<b>[ ✉️ Foydalanuvchiga xabar ]</b> tugmasi orqali.\n"
+                    "• <b>Tilni o‘zgartirish:</b> Pastki menyudagi <b>[ 🌐 Tilni o‘zgartirish ]</b> yoki <code>/language</code>."
+                ),
+                parse_mode="HTML",
+                reply_markup=build_main_reply_keyboard(admin_lang),
+            )
+        except Exception as exc:
+            print(f"  [!] Admin xabarini yuborishda xatolik: {exc}", flush=True)
 
-    print("\n[4/4] Multi-User Telegram Bot + Admin Panel faol!", flush=True)
+    print("\n[4/4] 3-Tilli Multi-User Telegram Bot + Admin Panel faol!", flush=True)
 
     while True:
         try:
