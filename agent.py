@@ -2,26 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 Ko'p Foydalanuvchili (Multi-User & Non-Blocking) 3-Tilli (UZ / RU / EN)
-AI Ish Qidirish Telegram Boti + Maxsus Admin Reply Keyboard va Avto-Rezyume Tizimi
+AI Ish Qidirish Telegram Boti + Ixcham Yig'iladigan (is_persistent=False) Menyu va Admin Paneli
 (Render.com 24/7 Ready)
 
 Yangilangan imkoniyatlar:
-1. Admin uchun alohida pastki menyu (Reply Keyboard):
-   - Oddiy foydalanuvchilar uchun standart 3 tilli menyu chiqadi.
-   - Admin (is_admin(uid)) uchun pastki doimiy klaviaturada standart tugmalar bilan birga:
-     * 👑 Admin Panel
-     * 📊 Statistika
-     * 👥 Foydalanuvchilar
-     * ✉️ Foydalanuvchiga xabar
-     * 📢 Umumiy e'lon (Broadcast)
-     tugmalari doimiy ko'rinib turadi va bosilganda darhol ishlaydi.
-2. Admin rezyumesini GitHub papkasidan (BASE_DIR) avtomatik ulash:
-   - Bot ishga tushganda yoki admin /start bosganda (yoki qidiruv berganda), BASE_DIR ichidagi
-     `rezyume_uz.pdf`, `rezyume_ru.pdf`, `rezyume_en.pdf` yoki `rezyume.pdf` fayllarini avtomatik o'qib,
-     ADMIN_ID profiliga biriktiradi (`has_resume = True`).
-   - Admin chatga qayta PDF tashlamasdan to'g'ridan-to'g'ri [ 🔍 Hozir qidirish ] ni bosishi mumkin.
-3. Xavfsizlik talabi:
-   - `ADMIN_ID = int(os.getenv("ADMIN_ID", "0").strip() or "0")` (kod ichida ochiq ID yozilmagan).
+1. Yig'iladigan klaviatura (is_persistent=False):
+   - Telegram kiritish maydonidagi klaviatura belgisi orqali menyuni istalgan payt yashirish yoki ochish mumkin.
+2. Ixcham Admin menyusi:
+   - Pastki klaviaturada ortiqcha 4 ta admin tugmasi olib tashlanib, faqat bitta `👑 Admin Panel` tugmasi qoldirildi
+     (bosilganda barcha admin funksiyalari chiroyli inline tugmalar ko'rinishida ochiladi).
+3. Admin rezyumesini GitHub papkasidan (BASE_DIR) avtomatik ulash va `ADMIN_ID` xavfsizlik sozlamasi saqlangan.
 """
 
 from __future__ import annotations
@@ -106,12 +96,8 @@ ADMIN_DEFAULT_PDF_FILES: list[str] = [
     "rezyume.pdf",
 ]
 
-# Admin Reply Keyboard tugmalari (pastki doimiy menyu uchun)
+# Admin uchun pastki menyuda faqat bitta ixcham tugma
 BTN_ADMIN_PANEL = "👑 Admin Panel"
-BTN_ADMIN_STATS = "📊 Statistika"
-BTN_ADMIN_USERS = "👥 Foydalanuvchilar"
-BTN_ADMIN_SENDMSG = "✉️ Foydalanuvchiga xabar"
-BTN_ADMIN_BROADCAST = "📢 Umumiy e'lon (Broadcast)"
 
 
 # =====================================================================
@@ -885,7 +871,6 @@ def auto_bind_admin_resume_from_base_dir(client: genai.Client | None = None) -> 
     Agar ADMIN_ID > 0 bo'lsa va adminning profilida hali rezyume yuklanmagan bo'lsa,
     BASE_DIR (GitHub loyiha papkasi) dagi `rezyume_uz.pdf`, `rezyume_ru.pdf`, `rezyume_en.pdf`
     yoki `rezyume.pdf` fayllarini avtomatik o'qib, ADMIN_ID profiliga biriktirib qo'yadi.
-    Admin chatga qayta PDF tashlamasdan [ 🔍 Hozir qidirish ] tugmasini bosishi bilanoq qidiruv ishlaydi!
     """
     if ADMIN_ID == 0:
         return None
@@ -900,7 +885,6 @@ def auto_bind_admin_resume_from_base_dir(client: genai.Client | None = None) -> 
     found_files: list[str] = []
     combined_texts: list[str] = []
 
-    # 1. Standart nomdagi fayllarni tekshirish
     for fname in ADMIN_DEFAULT_PDF_FILES:
         fpath = BASE_DIR / fname
         if fpath.exists() and fpath.is_file():
@@ -915,7 +899,6 @@ def auto_bind_admin_resume_from_base_dir(client: genai.Client | None = None) -> 
             except Exception as exc:
                 print(f"  [!] {fname} o'qishda xatolik: {exc}", flush=True)
 
-    # 2. Agar yuqoridagi nomlar topilmasa, BASE_DIR dagi har qanday *.pdf faylni tekshirish
     if not found_files and BASE_DIR.exists():
         for pdf_p in sorted(BASE_DIR.glob("*.pdf")):
             try:
@@ -929,8 +912,6 @@ def auto_bind_admin_resume_from_base_dir(client: genai.Client | None = None) -> 
 
     full_resume_text = "\n\n".join(combined_texts).strip()
     if not full_resume_text:
-        # Agar PDF skanerlangan bo'lsa yoki matn ajralmasa ham, admin hech qachon bloklanmasligi uchun
-        # kengaytirilgan muhandis-energetik profili biriktiriladi:
         full_resume_text = (
             "Инженер-энергетик / Инженер-проектировщик / Инженер ПТО / Electrical & Energy Project Engineer. "
             "Олий муҳандислик маълумоти (Энергетика ва электротехника). "
@@ -938,7 +919,6 @@ def auto_bind_admin_resume_from_base_dir(client: genai.Client | None = None) -> 
             "ҳамда MS Office (Excel, Word, PowerPoint) дастурларини мукаммал билади."
         )
 
-    # Kalit so'zlarni aniqlash: kengaytirilgan standart ro'yxat + (ixtiyoriy) Gemini kalit so'zlari
     keywords: list[str] = list(DEFAULT_FALLBACK_KEYWORDS)
     profession = "Инженер-энергетик / Electrical & Project Engineer"
 
@@ -1909,7 +1889,7 @@ Nomzod rezyumesi:
 
 
 # =====================================================================
-# 12. 3-TILLI TELEGRAM KLAVIATURALARI (ADMIN MAXSUS REPLY KEYBOARD BILAN)
+# 12. 3-TILLI YIG'ILADIGAN (is_persistent=False) KLAVIATURALAR
 # =====================================================================
 
 def build_language_selection_inline_keyboard() -> InlineKeyboardMarkup:
@@ -1924,13 +1904,13 @@ def build_language_selection_inline_keyboard() -> InlineKeyboardMarkup:
 
 def build_main_reply_keyboard(lang: str | None = "uz", user_id: str | int | None = None) -> ReplyKeyboardMarkup:
     """
-    1. Oddiy foydalanuvchilar uchun: Standart 7 ta tugma (3 tildan birida).
-    2. Faqat Admin (is_admin(user_id)) uchun: Standart tugmalar ostida to'g'ridan-to'g'ri
-       Admin boshqaruv tugmalari (👑 Admin Panel, 📊 Statistika, 👥 Foydalanuvchilar,
-       ✉️ Foydalanuvchiga xabar, 📢 Umumiy e'lon (Broadcast)) qo'shiladi!
+    Yig'iladigan (is_persistent=False) asosiy pastki klaviatura:
+    - Foydalanuvchi Telegram kiritish maydonidagi klaviatura belgisi orqali menyuni istalgan payt yashira oladi.
+    - Admin uchun pastda faqat bitta ixcham `👑 Admin Panel` tugmasi qo'shiladi (bosilganda barcha admin
+      imkoniyatlari chiroyli inline tugmalar ko'rinishida ochiladi).
     """
     code = normalize_lang(lang)
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True, row_width=2)
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=False, row_width=2)
     markup.add(
         KeyboardButton(tr(code, "btn_search_now")),
         KeyboardButton(tr(code, "btn_upload_resume")),
@@ -1943,26 +1923,22 @@ def build_main_reply_keyboard(lang: str | None = "uz", user_id: str | int | None
         KeyboardButton(tr(code, "btn_stop_search")),
         KeyboardButton(tr(code, "btn_resume_schedule")),
     )
-    markup.add(
-        KeyboardButton(tr(code, "btn_change_lang")),
-    )
 
-    # Faqat Admin (ADMIN_ID) uchun qo'shimcha pastki boshqaruv tugmalari
     if is_admin(user_id):
-        markup.add(KeyboardButton(BTN_ADMIN_PANEL))
         markup.add(
-            KeyboardButton(BTN_ADMIN_STATS),
-            KeyboardButton(BTN_ADMIN_USERS),
+            KeyboardButton(tr(code, "btn_change_lang")),
+            KeyboardButton(BTN_ADMIN_PANEL),
         )
+    else:
         markup.add(
-            KeyboardButton(BTN_ADMIN_SENDMSG),
-            KeyboardButton(BTN_ADMIN_BROADCAST),
+            KeyboardButton(tr(code, "btn_change_lang")),
         )
 
     return markup
 
 
 def build_admin_inline_keyboard() -> InlineKeyboardMarkup:
+    """👑 Admin Panel bosilganda ochiladigan to'liq inline admin boshqaruv menyusi."""
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📊 Statistika", callback_data="admin|stats"),
@@ -2112,8 +2088,6 @@ def run_user_scan(
             pass
         return
 
-    # Agar foydalanuvchi ADMIN bo'lsa va rezyumesi hali biriktirilmagan bo'lsa,
-    # GitHub papkasidan (BASE_DIR) avtomatik biriktiramiz!
     if is_admin(uid) and (not profile.get("has_resume") or not profile.get("resume_text")):
         auto_bind_admin_resume_from_base_dir(client)
         profile = load_user_profile(uid)
@@ -2541,7 +2515,7 @@ def broadcast_message_to_all_users(bot: telebot.TeleBot, broadcast_text: str) ->
 
 
 # =====================================================================
-# 16. TELEGRAM BOT HANDLERLARI (3-TILLI INTERFEYS + ADMIN PASTKI MENYUSI)
+# 16. TELEGRAM BOT HANDLERLARI (IXCHAM ADMIN TUGMASI BILAN)
 # =====================================================================
 
 def _send_welcome_for_user(
@@ -2551,10 +2525,6 @@ def _send_welcome_for_user(
     first_name: str,
     profile: dict[str, Any],
 ) -> None:
-    """
-    Agar foydalanuvchi Admin bo'lsa va rezyumesi hali biriktirilmagan bo'lsa,
-    avtomatik BASE_DIR dagi PDF rezyumelarni biriktiradi va Admin Reply Keyboard chiqaradi.
-    """
     if is_admin(uid) and (not profile.get("has_resume") or not profile.get("resume_text")):
         auto_bind_admin_resume_from_base_dir(client)
         profile = load_user_profile(uid)
@@ -2721,66 +2691,7 @@ def register_bot_handlers(
         except Exception as exc:
             print(f"[!] Admin Panel tugmasida xatolik: {exc}", flush=True)
 
-    # 2. ADMIN PASTKI TUGMALARI (📊 Statistika, 👥 Foydalanuvchilar, ✉️ Foydalanuvchiga xabar, 📢 Umumiy e'lon)
-    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_ADMIN_STATS)
-    def handle_admin_stats_reply_btn(message: Message) -> None:
-        try:
-            sender_id = message.from_user.id if message.from_user else message.chat.id
-            if not is_admin(sender_id):
-                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
-                return
-            send_admin_stats_message(bot, message.chat.id)
-        except Exception as exc:
-            print(f"[!] Admin Statistika tugmasida xatolik: {exc}", flush=True)
-
-    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_ADMIN_USERS)
-    def handle_admin_users_reply_btn(message: Message) -> None:
-        try:
-            sender_id = message.from_user.id if message.from_user else message.chat.id
-            if not is_admin(sender_id):
-                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
-                return
-            send_admin_users_list_message(bot, message.chat.id)
-        except Exception as exc:
-            print(f"[!] Admin Foydalanuvchilar tugmasida xatolik: {exc}", flush=True)
-
-    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_ADMIN_SENDMSG)
-    def handle_admin_sendmsg_reply_btn(message: Message) -> None:
-        try:
-            sender_id = message.from_user.id if message.from_user else message.chat.id
-            if not is_admin(sender_id):
-                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
-                return
-            ADMIN_PENDING_ACTION[ADMIN_ID] = "sendmsg"
-            bot.send_message(
-                chat_id=message.chat.id,
-                text=(
-                    "✉️ <b>Xabar yubormoqchi bo‘lgan foydalanuvchi ID raqami va xabar matnini yozib yuboring:</b>\n"
-                    "<i>Masalan:</i> <code>123456789 Assalomu alaykum, profilingiz tasdiqlandi</code>\n"
-                    "<i>(Yoki to‘g‘ridan-to‘g‘ri</i> <code>/send USER_ID Matn</code> <i>buyrug‘ini ishlating)</i>"
-                ),
-                parse_mode="HTML",
-            )
-        except Exception as exc:
-            print(f"[!] Admin Foydalanuvchiga xabar tugmasida xatolik: {exc}", flush=True)
-
-    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_ADMIN_BROADCAST or "Umumiy e'lon" in (m.text or ""))
-    def handle_admin_broadcast_reply_btn(message: Message) -> None:
-        try:
-            sender_id = message.from_user.id if message.from_user else message.chat.id
-            if not is_admin(sender_id):
-                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
-                return
-            ADMIN_PENDING_ACTION[ADMIN_ID] = "broadcast"
-            bot.send_message(
-                chat_id=message.chat.id,
-                text="📢 <b>Barcha foydalanuvchilarga yubormoqchi bo‘lgan xabar matnini yozib yuboring:</b>",
-                parse_mode="HTML",
-            )
-        except Exception as exc:
-            print(f"[!] Admin Broadcast tugmasida xatolik: {exc}", flush=True)
-
-    # 3. ADMIN BUYRUQLARI: /send, /broadcast, /ban, /unban, /addlimit
+    # 2. ADMIN BUYRUQLARI: /send, /broadcast, /ban, /unban, /addlimit
     @bot.message_handler(commands=["send", "ban", "unban", "addlimit", "broadcast"])
     def handle_admin_quick_commands(message: Message) -> None:
         try:
@@ -2865,7 +2776,7 @@ def register_bot_handlers(
         except Exception as exc:
             print(f"[!] Admin buyruq xatoligi: {exc}", flush=True)
 
-    # 4. /start VA BIRINCHI KIRISHDA TIL TANLASH (ADMIN UCHUN AVTO-REZYUME BILAN)
+    # 3. /start VA BIRINCHI KIRISHDA TIL TANLASH (ADMIN UCHUN AVTO-REZYUME BILAN)
     @bot.message_handler(commands=["start", "help"])
     def handle_start(message: Message) -> None:
         try:
@@ -2895,7 +2806,7 @@ def register_bot_handlers(
         except Exception as exc:
             print(f"[!] /start xatoligi: {exc}", flush=True)
 
-    # 5. TILNI O'ZGARTIRISH TUGMASI YOKI /language BUYRUG'I
+    # 4. TILNI O'ZGARTIRISH TUGMASI YOKI /language BUYRUG'I
     @bot.message_handler(
         func=lambda m: (m.text or "").strip() in ALL_CHANGE_LANG_BTNS
         or any(x in (m.text or "") for x in ("Tilni o‘zgartirish", "Tilni o'zgartirish", "Сменить язык", "Change language"))
@@ -3236,7 +3147,7 @@ def register_bot_handlers(
                 _send_welcome_for_user(bot, client, uid, first_name, profile)
                 return
 
-            # 1. ADMIN PANEL TUGMALARI
+            # 1. ADMIN PANEL INLINE TUGMALARI
             if action in ("admin", "adm_quick_lim", "adm_quick_ban"):
                 if not is_admin(sender_id):
                     bot.answer_callback_query(call.id, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q", show_alert=True)
@@ -3436,7 +3347,7 @@ def register_bot_handlers(
 
 def main() -> None:
     print("=" * 88, flush=True)
-    print(" 3-TILLI (UZ/RU/EN) MULTI-USER AI ISH QIDIRISH BOTI + ADMIN PASTKI MENYUSI", flush=True)
+    print(" 3-TILLI (UZ/RU/EN) MULTI-USER AI ISH QIDIRISH BOTI (IXCHAM YIG'ILADIGAN MENYU)", flush=True)
     print(f" Ishchi papka   : {BASE_DIR}", flush=True)
     print(f" Userlar bazasi : {USERS_DIR}", flush=True)
     print(f" Admin ID       : {'Sozlangan (ENV)' if ADMIN_ID != 0 else 'Kiritilmagan (0)'}", flush=True)
@@ -3449,7 +3360,6 @@ def main() -> None:
     config = get_config()
     client = genai.Client(api_key=config["GEMINI_API_KEY"])
 
-    # Bot ishga tushganda ADMIN_ID profiliga GitHub papkasidagi (BASE_DIR) PDF rezyumelarni avtomatik ulaymiz
     if ADMIN_ID != 0:
         auto_bind_admin_resume_from_base_dir(client)
 
@@ -3468,11 +3378,9 @@ def main() -> None:
             bot.send_message(
                 chat_id=ADMIN_ID,
                 text=(
-                    "👑 <b>Admin Pastki Menyusi va Avto-Rezyume Tizimi faollashtirildi!</b>\n\n"
-                    f"• <b>Avto-biriktirilgan rezyume:</b> <code>{html.escape(admin_prof.get('resume_filename', 'rezyume.pdf'))}</code>\n"
-                    "• Chatga qayta PDF tashlamasdan to‘g‘ridan-to‘g‘ri <b>[ 🔍 Hozir qidirish ]</b> ni bosishingiz mumkin.\n"
-                    "• Pastki klaviaturangizga maxsus Admin tugmalari (<b>👑 Admin Panel</b>, <b>📊 Statistika</b>, "
-                    "<b>👥 Foydalanuvchilar</b>, <b>✉️ Foydalanuvchiga xabar</b>, <b>📢 Umumiy e'lon</b>) qo‘shildi."
+                    "✅ <b>Ixcham va yig‘iladigan menyu faollashtirildi!</b>\n\n"
+                    "• Endi pastki klaviaturani kiritish maydonidagi klaviatura belgisi orqali bemalol yashirish va ochish mumkin (<code>is_persistent=False</code>).\n"
+                    "• Pastki menyuda faqat bitta <b>[ 👑 Admin Panel ]</b> tugmasi qoldirildi — uni bosganingizda barcha admin funksiyalari inline tugmalar ko‘rinishida ochiladi."
                 ),
                 parse_mode="HTML",
                 reply_markup=build_main_reply_keyboard(admin_lang, user_id=ADMIN_ID),
@@ -3480,7 +3388,7 @@ def main() -> None:
         except Exception as exc:
             print(f"  [!] Admin xabarini yuborishda xatolik: {exc}", flush=True)
 
-    print("\n[4/4] 3-Tilli Multi-User Telegram Bot + Admin Reply Keyboard faol!", flush=True)
+    print("\n[4/4] 3-Tilli Multi-User Telegram Bot (is_persistent=False) faol!", flush=True)
 
     while True:
         try:
