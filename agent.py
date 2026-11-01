@@ -2,17 +2,26 @@
 # -*- coding: utf-8 -*-
 """
 Ko'p Foydalanuvchili (Multi-User & Non-Blocking) 3-Tilli (UZ / RU / EN)
-AI Ish Qidirish Telegram Boti + Kengaytirilgan Admin Paneli (Render.com 24/7 Ready)
+AI Ish Qidirish Telegram Boti + Maxsus Admin Reply Keyboard va Avto-Rezyume Tizimi
+(Render.com 24/7 Ready)
 
-Yangi qo'shilgan imkoniyatlar:
-1. Admindan alohida foydalanuvchiga xabar yuborish:
-   - Buyruq orqali: `/send USER_ID Xabar matni`
-   - Admin paneli tugmasi orqali: `[ ✉️ Foydalanuvchiga xabar ]`
-   - Xabar foydalanuvchining tanlagan tilida ('📩 Admindan xabar:' / '📩 Сообщение от администратора:' / '📩 Message from Admin:') boradi.
-2. To'liq 3 tilli tizim (TRANSLATIONS: uz, ru, en):
-   - Birinchi kirishda (/start) til tanlash inline tugmalari: 🇺🇿 O‘zbekcha | 🇷🇺 Русский | 🇬🇧 English
-   - Pastki klaviaturada (Reply Keyboard) va `/language` buyrug'i orqali istalgan payt tilni o'zgartirish.
-   - Barcha menyular, ogohlantirishlar, qidiruv natijalari, tahlil va Kover-xat foydalanuvchi tanlagan tilda ishlaydi.
+Yangilangan imkoniyatlar:
+1. Admin uchun alohida pastki menyu (Reply Keyboard):
+   - Oddiy foydalanuvchilar uchun standart 3 tilli menyu chiqadi.
+   - Admin (is_admin(uid)) uchun pastki doimiy klaviaturada standart tugmalar bilan birga:
+     * 👑 Admin Panel
+     * 📊 Statistika
+     * 👥 Foydalanuvchilar
+     * ✉️ Foydalanuvchiga xabar
+     * 📢 Umumiy e'lon (Broadcast)
+     tugmalari doimiy ko'rinib turadi va bosilganda darhol ishlaydi.
+2. Admin rezyumesini GitHub papkasidan (BASE_DIR) avtomatik ulash:
+   - Bot ishga tushganda yoki admin /start bosganda (yoki qidiruv berganda), BASE_DIR ichidagi
+     `rezyume_uz.pdf`, `rezyume_ru.pdf`, `rezyume_en.pdf` yoki `rezyume.pdf` fayllarini avtomatik o'qib,
+     ADMIN_ID profiliga biriktiradi (`has_resume = True`).
+   - Admin chatga qayta PDF tashlamasdan to'g'ridan-to'g'ri [ 🔍 Hozir qidirish ] ni bosishi mumkin.
+3. Xavfsizlik talabi:
+   - `ADMIN_ID = int(os.getenv("ADMIN_ID", "0").strip() or "0")` (kod ichida ochiq ID yozilmagan).
 """
 
 from __future__ import annotations
@@ -59,7 +68,7 @@ from google.genai import types
 
 
 # =====================================================================
-# 1. SOZLAMALAR, ADMIN_ID VA VAQT MINTAQASI (UTC+5)
+# 1. SOZLAMALAR, XAVFSIZ ADMIN_ID VA VAQT MINTAQASI (UTC+5)
 # =====================================================================
 
 try:
@@ -83,11 +92,26 @@ USERS_DIR = BASE_DIR / "users"
 
 load_dotenv(dotenv_path=BASE_DIR / ".env")
 
-
+# Xavfsizlik talabi: ADMIN_ID faqat Environment Variable (.env yoki Render) orqali olinadi
 ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0").strip() or "0")
 
 # Oddiy foydalanuvchilar uchun kunlik qidiruv limiti (Admin uchun cheksiz)
 DAILY_SEARCH_LIMIT: int = 3
+
+# Loyiha papkasidagi (GitHub) Admin rezyume fayllari nomlari
+ADMIN_DEFAULT_PDF_FILES: list[str] = [
+    "rezyume_uz.pdf",
+    "rezyume_ru.pdf",
+    "rezyume_en.pdf",
+    "rezyume.pdf",
+]
+
+# Admin Reply Keyboard tugmalari (pastki doimiy menyu uchun)
+BTN_ADMIN_PANEL = "👑 Admin Panel"
+BTN_ADMIN_STATS = "📊 Statistika"
+BTN_ADMIN_USERS = "👥 Foydalanuvchilar"
+BTN_ADMIN_SENDMSG = "✉️ Foydalanuvchiga xabar"
+BTN_ADMIN_BROADCAST = "📢 Umumiy e'lon (Broadcast)"
 
 
 # =====================================================================
@@ -466,7 +490,6 @@ def normalize_lang(lang: str | None) -> Literal["uz", "ru", "en"]:
 
 
 def tr(lang: str | None, key: str, **kwargs: Any) -> str:
-    """Tanlangan til bo'yicha TRANSLATIONS lug'atidan matnni olib formatlaydi."""
     code = normalize_lang(lang)
     template = TRANSLATIONS.get(code, TRANSLATIONS["uz"]).get(key) or TRANSLATIONS["uz"].get(key, key)
     if kwargs:
@@ -477,7 +500,6 @@ def tr(lang: str | None, key: str, **kwargs: Any) -> str:
     return template
 
 
-# Barcha 3 tildagi Reply Keyboard tugmalari to'plami (matn orqali bosilganda tanib olish uchun)
 ALL_SEARCH_NOW_BTNS = {TRANSLATIONS[l]["btn_search_now"] for l in TRANSLATIONS} | {"/scan"}
 ALL_UPLOAD_RESUME_BTNS = {TRANSLATIONS[l]["btn_upload_resume"] for l in TRANSLATIONS}
 ALL_MY_KEYWORDS_BTNS = {TRANSLATIONS[l]["btn_my_keywords"] for l in TRANSLATIONS}
@@ -552,15 +574,28 @@ UZBEKISTAN_AREA_ID = "97"
 
 DEFAULT_FALLBACK_KEYWORDS: list[str] = [
     "Энергетик",
-    "Инженер-энергетик",
-    "Инженер-проектировщик",
-    "Инженер ПТО",
+    "Электроэнергетика",
+    "Главный энергетик",
     "Электрик",
+    "Электромонтажник",
     "Electrical Engineer",
-    "Project Engineer",
-    "ЭОМ",
+    "Energetik",
+    "Elektroenergetika",
+    "Инженер-проектировщик",
+    "Проектировщик",
+    "Промэлектропроект",
     "Электроснабжение",
+    "ЭОМ",
+    "Электроосвещение",
+    "Muhandis-proyektirovshchik",
+    "Engineer",
+    "Инженер-энергетик",
+    "Инженер ПТО",
     "Главный инженер",
+    "Технический директор",
+    "Технолог",
+    "Строительный контроль",
+    "Наладчик",
 ]
 
 # 2-MANBA: LinkedIn Public Guest API (TEGILMADI)
@@ -575,7 +610,6 @@ USER_DATA_LOCKS: dict[str, threading.Lock] = {}
 USER_SCAN_LOCKS: dict[str, threading.Lock] = {}
 USER_STOP_EVENTS: dict[str, threading.Event] = {}
 
-# Admin interaktiv rejimi ("broadcast", "sendmsg", "ban", "addlimit")
 ADMIN_PENDING_ACTION: dict[int, str | None] = {}
 
 
@@ -766,7 +800,7 @@ class BatchVacancyEvaluationList(BaseModel):
 
 
 # =====================================================================
-# 7. FOYDALANUVCHI PROFILI, TIL SOZLAMASI VA KUNLIK LIMIT
+# 7. FOYDALANUVCHI PROFILI VA ADMIN REZYUMESINI AVTOMATIK ULASH
 # =====================================================================
 
 def get_user_dir(user_id: str | int) -> Path:
@@ -785,7 +819,7 @@ def load_user_profile(user_id: str | int) -> dict[str, Any]:
         "user_id": uid,
         "full_name": "",
         "username": "",
-        "ui_lang": "",  # Bo'sh bo'lsa -> birinchi kirishda til tanlash so'raladi
+        "ui_lang": "",
         "is_banned": False,
         "has_resume": False,
         "resume_filename": "",
@@ -830,6 +864,111 @@ def save_user_profile(user_id: str | int, profile: dict[str, Any]) -> None:
             )
         except Exception as exc:
             print(f"[OGOHLANTIRISH] User {uid} profilini saqlashda xatolik: {exc}", flush=True)
+
+
+def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        pages_text: list[str] = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                pages_text.append(page_text.strip())
+        return "\n\n".join(pages_text).strip()
+    except Exception as exc:
+        print(f"[OGOHLANTIRISH] PDF matnini o'qishda xatolik: {exc}", flush=True)
+        return ""
+
+
+def auto_bind_admin_resume_from_base_dir(client: genai.Client | None = None) -> dict[str, Any] | None:
+    """
+    Agar ADMIN_ID > 0 bo'lsa va adminning profilida hali rezyume yuklanmagan bo'lsa,
+    BASE_DIR (GitHub loyiha papkasi) dagi `rezyume_uz.pdf`, `rezyume_ru.pdf`, `rezyume_en.pdf`
+    yoki `rezyume.pdf` fayllarini avtomatik o'qib, ADMIN_ID profiliga biriktirib qo'yadi.
+    Admin chatga qayta PDF tashlamasdan [ 🔍 Hozir qidirish ] tugmasini bosishi bilanoq qidiruv ishlaydi!
+    """
+    if ADMIN_ID == 0:
+        return None
+
+    uid = str(ADMIN_ID)
+    profile = load_user_profile(uid)
+    if profile.get("has_resume") and profile.get("resume_text") and profile.get("keywords"):
+        return profile
+
+    print(f"\n[ADMIN AUTO-RESUME] Admin (ID: {ADMIN_ID}) uchun {BASE_DIR} papkasidan PDF rezyumelar qidirilmoqda...", flush=True)
+
+    found_files: list[str] = []
+    combined_texts: list[str] = []
+
+    # 1. Standart nomdagi fayllarni tekshirish
+    for fname in ADMIN_DEFAULT_PDF_FILES:
+        fpath = BASE_DIR / fname
+        if fpath.exists() and fpath.is_file():
+            try:
+                txt = extract_text_from_pdf_bytes(fpath.read_bytes())
+                found_files.append(fname)
+                if txt:
+                    combined_texts.append(f"--- {fname} ---\n{txt}")
+                    print(f"  [+] Admin PDF o'qildi: {fname} ({len(txt)} belgi)", flush=True)
+                else:
+                    print(f"  [~] Admin PDF topildi (matni bo'sh/skan): {fname}", flush=True)
+            except Exception as exc:
+                print(f"  [!] {fname} o'qishda xatolik: {exc}", flush=True)
+
+    # 2. Agar yuqoridagi nomlar topilmasa, BASE_DIR dagi har qanday *.pdf faylni tekshirish
+    if not found_files and BASE_DIR.exists():
+        for pdf_p in sorted(BASE_DIR.glob("*.pdf")):
+            try:
+                txt = extract_text_from_pdf_bytes(pdf_p.read_bytes())
+                found_files.append(pdf_p.name)
+                if txt:
+                    combined_texts.append(f"--- {pdf_p.name} ---\n{txt}")
+                    print(f"  [+] Admin PDF o'qildi: {pdf_p.name} ({len(txt)} belgi)", flush=True)
+            except Exception:
+                pass
+
+    full_resume_text = "\n\n".join(combined_texts).strip()
+    if not full_resume_text:
+        # Agar PDF skanerlangan bo'lsa yoki matn ajralmasa ham, admin hech qachon bloklanmasligi uchun
+        # kengaytirilgan muhandis-energetik profili biriktiriladi:
+        full_resume_text = (
+            "Инженер-энергетик / Инженер-проектировщик / Инженер ПТО / Electrical & Energy Project Engineer. "
+            "Олий муҳандислик маълумоти (Энергетика ва электротехника). "
+            "AutoCAD (2D/3D лойиҳалаш, бир чизиқли электр схемалар, ЭОМ, Электроснабжение, ПТО ҳужжатлари) "
+            "ҳамда MS Office (Excel, Word, PowerPoint) дастурларини мукаммал билади."
+        )
+
+    # Kalit so'zlarni aniqlash: kengaytirilgan standart ro'yxat + (ixtiyoriy) Gemini kalit so'zlari
+    keywords: list[str] = list(DEFAULT_FALLBACK_KEYWORDS)
+    profession = "Инженер-энергетик / Electrical & Project Engineer"
+
+    if client is not None and combined_texts:
+        try:
+            ai_kws, ai_prof, _ = extract_keywords_from_resume_with_gemini(client, full_resume_text)
+            if ai_prof:
+                profession = ai_prof
+            for k in ai_kws:
+                if k.lower() not in [ek.lower() for ek in keywords]:
+                    keywords.append(k)
+        except Exception:
+            pass
+
+    profile["has_resume"] = True
+    profile["resume_filename"] = ", ".join(found_files) if found_files else "rezyume_uz/ru/en.pdf"
+    profile["resume_text"] = full_resume_text
+    profile["resume_lang"] = profile.get("ui_lang") or "uz"
+    profile["profession"] = profession
+    profile["keywords"] = keywords
+    if not profile.get("ui_lang"):
+        profile["ui_lang"] = "uz"
+
+    save_user_profile(uid, profile)
+    print(
+        f"  [+] Admin (ID: {ADMIN_ID}) profiliga rezyume ({profile['resume_filename']}) "
+        f"va {len(keywords)} ta kalit so'z avtomatik biriktirildi!",
+        flush=True,
+    )
+    return profile
 
 
 def update_user_identity(message: Message) -> dict[str, Any]:
@@ -998,7 +1137,7 @@ def save_user_state(user_id: str | int, state: dict[str, dict[str, Any]]) -> Non
 
 
 # =====================================================================
-# 8. KONFIGURATSIYA, PDF O'QISH VA YORDAMCHI FUNKSIYALAR
+# 8. KONFIGURATSIYA VA YORDAMCHI FUNKSIYALAR
 # =====================================================================
 
 def get_config() -> dict[str, str]:
@@ -1022,20 +1161,6 @@ def get_config() -> dict[str, str]:
         "GEMINI_API_KEY": gemini_key,
         "TELEGRAM_BOT_TOKEN": tg_token,
     }
-
-
-def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
-    try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-        pages_text: list[str] = []
-        for page in reader.pages:
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                pages_text.append(page_text.strip())
-        return "\n\n".join(pages_text).strip()
-    except Exception as exc:
-        print(f"[OGOHLANTIRISH] PDF matnini o'qishda xatolik: {exc}", flush=True)
-        return ""
 
 
 def detect_language_fast(text: str) -> Literal["uz", "ru", "en"]:
@@ -1223,10 +1348,10 @@ def _extract_keywords_fallback_from_text(resume_text: str) -> tuple[list[str], s
             found.append(label)
 
     if not found:
-        found = list(DEFAULT_FALLBACK_KEYWORDS[:8])
+        found = list(DEFAULT_FALLBACK_KEYWORDS[:10])
 
     profession = found[0] if found else "Mutaxassis"
-    return found[:10], profession, lang
+    return found[:12], profession, lang
 
 
 def extract_keywords_from_resume_with_gemini(
@@ -1655,10 +1780,6 @@ def analyze_vacancies_batch_with_gemini(
     resume_text: str,
     user_lang: str = "uz",
 ) -> tuple[dict[str, dict[str, Any]], bool]:
-    """
-    5 ta vakansiyani foydalanuvchi rezyumesi bilan solishtiradi va `short_summary`ni
-    foydalanuvchi tanlagan tilda (`user_lang`) qaytaradi.
-    """
     if not batch:
         return {}, False
 
@@ -1735,10 +1856,6 @@ def generate_cover_letter_on_demand(
     record: dict[str, Any],
     user_profile: dict[str, Any],
 ) -> tuple[str, bool]:
-    """
-    Kover-xat generatsiya qilinayotganda foydalanuvchining botda tanlagan tili (`ui_lang`)
-    ustuvor hisoblanadi.
-    """
     vac = record["vacancy"]
     preferred_lang = normalize_lang(user_profile.get("ui_lang") or record.get("resume_lang") or "uz")
     lang_label = {"uz": "O'zbek (lotin)", "ru": "Русский", "en": "English"}[preferred_lang]
@@ -1792,11 +1909,10 @@ Nomzod rezyumesi:
 
 
 # =====================================================================
-# 12. 3-TILLI TELEGRAM KLAVIATURALARI VA XABAR FORMATLARI
+# 12. 3-TILLI TELEGRAM KLAVIATURALARI (ADMIN MAXSUS REPLY KEYBOARD BILAN)
 # =====================================================================
 
 def build_language_selection_inline_keyboard() -> InlineKeyboardMarkup:
-    """Birinchi kirishda yoki tilni o'zgartirganda chiqadigan 3 tilli inline tugmalar."""
     kb = InlineKeyboardMarkup(row_width=3)
     kb.add(
         InlineKeyboardButton("🇺🇿 O‘zbekcha", callback_data="set_lang|uz"),
@@ -1806,8 +1922,13 @@ def build_language_selection_inline_keyboard() -> InlineKeyboardMarkup:
     return kb
 
 
-def build_main_reply_keyboard(lang: str | None = "uz") -> ReplyKeyboardMarkup:
-    """Foydalanuvchi tanlagan tilga moslashtirilgan asosiy pastki menyu (Reply Keyboard)."""
+def build_main_reply_keyboard(lang: str | None = "uz", user_id: str | int | None = None) -> ReplyKeyboardMarkup:
+    """
+    1. Oddiy foydalanuvchilar uchun: Standart 7 ta tugma (3 tildan birida).
+    2. Faqat Admin (is_admin(user_id)) uchun: Standart tugmalar ostida to'g'ridan-to'g'ri
+       Admin boshqaruv tugmalari (👑 Admin Panel, 📊 Statistika, 👥 Foydalanuvchilar,
+       ✉️ Foydalanuvchiga xabar, 📢 Umumiy e'lon (Broadcast)) qo'shiladi!
+    """
     code = normalize_lang(lang)
     markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True, row_width=2)
     markup.add(
@@ -1825,11 +1946,23 @@ def build_main_reply_keyboard(lang: str | None = "uz") -> ReplyKeyboardMarkup:
     markup.add(
         KeyboardButton(tr(code, "btn_change_lang")),
     )
+
+    # Faqat Admin (ADMIN_ID) uchun qo'shimcha pastki boshqaruv tugmalari
+    if is_admin(user_id):
+        markup.add(KeyboardButton(BTN_ADMIN_PANEL))
+        markup.add(
+            KeyboardButton(BTN_ADMIN_STATS),
+            KeyboardButton(BTN_ADMIN_USERS),
+        )
+        markup.add(
+            KeyboardButton(BTN_ADMIN_SENDMSG),
+            KeyboardButton(BTN_ADMIN_BROADCAST),
+        )
+
     return markup
 
 
 def build_admin_inline_keyboard() -> InlineKeyboardMarkup:
-    """Admin Boshqaruv Menyusi tugmalari ([ ✉️ Foydalanuvchiga xabar ] tugmasi bilan)."""
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📊 Statistika", callback_data="admin|stats"),
@@ -1979,13 +2112,19 @@ def run_user_scan(
             pass
         return
 
+    # Agar foydalanuvchi ADMIN bo'lsa va rezyumesi hali biriktirilmagan bo'lsa,
+    # GitHub papkasidan (BASE_DIR) avtomatik biriktiramiz!
+    if is_admin(uid) and (not profile.get("has_resume") or not profile.get("resume_text")):
+        auto_bind_admin_resume_from_base_dir(client)
+        profile = load_user_profile(uid)
+
     if not profile.get("has_resume") or not profile.get("resume_text"):
         try:
             bot.send_message(
                 chat_id=uid,
                 text=tr(lang, "need_resume_first"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(lang),
+                reply_markup=build_main_reply_keyboard(lang, user_id=uid),
             )
         except Exception:
             pass
@@ -2000,7 +2139,7 @@ def run_user_scan(
                 chat_id=uid,
                 text=tr(lang, "scan_already_running"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(lang),
+                reply_markup=build_main_reply_keyboard(lang, user_id=uid),
             )
         except Exception:
             pass
@@ -2016,7 +2155,7 @@ def run_user_scan(
                     chat_id=uid,
                     text=quota_info,
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(lang),
+                    reply_markup=build_main_reply_keyboard(lang, user_id=uid),
                 )
             except Exception:
                 pass
@@ -2041,7 +2180,7 @@ def run_user_scan(
                         keywords=html.escape(kws_preview),
                     ),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(lang),
+                    reply_markup=build_main_reply_keyboard(lang, user_id=uid),
                 )
             except Exception:
                 pass
@@ -2074,7 +2213,7 @@ def run_user_scan(
                     chat_id=uid,
                     text=tr(lang, "scan_stopped"),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(lang),
+                    reply_markup=build_main_reply_keyboard(lang, user_id=uid),
                 )
             except Exception:
                 pass
@@ -2098,7 +2237,7 @@ def run_user_scan(
                             hint=hint,
                         ),
                         parse_mode="HTML",
-                        reply_markup=build_main_reply_keyboard(lang),
+                        reply_markup=build_main_reply_keyboard(lang, user_id=uid),
                     )
                 except Exception:
                     pass
@@ -2128,7 +2267,7 @@ def run_user_scan(
                         chat_id=uid,
                         text=tr(lang, "ai_limit_fallback_notice"),
                         parse_mode="HTML",
-                        reply_markup=build_main_reply_keyboard(lang),
+                        reply_markup=build_main_reply_keyboard(lang, user_id=uid),
                     )
                 except Exception:
                     pass
@@ -2187,7 +2326,7 @@ def run_user_scan(
                         mode_note=mode_note,
                     ),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(lang),
+                    reply_markup=build_main_reply_keyboard(lang, user_id=uid),
                 )
             except Exception:
                 pass
@@ -2241,19 +2380,82 @@ def schedule_runner_loop() -> None:
 
 
 # =====================================================================
-# 15. ADMIN FUNKSIYALARI: DIRECT MESSAGE (/send), BROADCAST VA NOTIFICATION
+# 15. ADMIN FUNKSIYALARI: PANEL, STATISTIKA, USERS, DIRECT MSG, BROADCAST
 # =====================================================================
+
+def send_admin_panel_overview(bot: telebot.TeleBot, chat_id: int | str) -> None:
+    ADMIN_PENDING_ACTION.pop(ADMIN_ID, None)
+    stats = collect_bot_statistics()
+    admin_text = (
+        "👑 <b>Admin Boshqaruv Menyusi</b>\n\n"
+        f"• <b>Admin ID:</b> <code>{ADMIN_ID}</code> (Cheksiz qidiruv)\n"
+        f"• <b>Jami ro‘yxatdan o‘tganlar:</b> <b>{stats['total_users']}</b> ta\n"
+        f"• <b>PDF rezyume yuklaganlar:</b> <b>{stats['with_resume']}</b> ta\n"
+        f"• <b>Bugungi faol qidiruvlar:</b> <b>{stats['today_searches']}</b> ta ({stats['active_users_today']} ta faol user)\n"
+        f"• <b>Bloklanganlar (Ban):</b> <b>{stats['banned_users']}</b> ta\n\n"
+        "💡 <b>Tezkor buyruqlar:</b>\n"
+        "• <code>/send USER_ID Matn</code> — Foydalanuvchiga shaxsiy xabar yuborish\n"
+        "• <code>/broadcast Matn</code> — Barchaga umumiy e'lon yuborish\n"
+        "• <code>/ban USER_ID</code> — Foydalanuvchini bloklash\n"
+        "• <code>/unban USER_ID</code> — Blokdan chiqarish\n"
+        "• <code>/addlimit USER_ID 5</code> — Qo‘shimcha qidiruv limiti berish"
+    )
+    bot.send_message(
+        chat_id=chat_id,
+        text=admin_text,
+        parse_mode="HTML",
+        reply_markup=build_admin_inline_keyboard(),
+    )
+
+
+def send_admin_stats_message(bot: telebot.TeleBot, chat_id: int | str) -> None:
+    stats = collect_bot_statistics()
+    stats_text = (
+        "📊 <b>Bot Statistikasi (Real-vaqt):</b>\n\n"
+        f"• 👥 <b>Jami ro‘yxatdan o‘tganlar:</b> {stats['total_users']} ta\n"
+        f"• 📄 <b>PDF rezyume yuklaganlar:</b> {stats['with_resume']} ta\n"
+        f"• 🔍 <b>Bugungi faol qidiruvlar soni:</b> {stats['today_searches']} ta ({stats['active_users_today']} ta faol user)\n"
+        f"• 🚫 <b>Bloklangan foydalanuvchilar:</b> {stats['banned_users']} ta\n"
+        f"• 🕒 <b>Vaqt:</b> <code>{get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
+    )
+    bot.send_message(
+        chat_id=chat_id,
+        text=stats_text,
+        parse_mode="HTML",
+        reply_markup=build_admin_inline_keyboard(),
+    )
+
+
+def send_admin_users_list_message(bot: telebot.TeleBot, chat_id: int | str) -> None:
+    uids = list_all_user_ids()
+    lines: list[str] = [f"👥 <b>Ro‘yxatdan o‘tgan foydalanuvchilar ({len(uids)} ta):</b>\n"]
+    today = get_today_str()
+    for idx, u in enumerate(uids[:30], start=1):
+        p = load_user_profile(u)
+        name = html.escape(p.get("full_name") or ("Admin" if is_admin(u) else "User"))
+        uname = f" (@{html.escape(p['username'])})" if p.get("username") else ""
+        u_lang = (p.get("ui_lang") or "uz").upper()
+        used = p.get("daily_search_count", 0) if p.get("daily_search_date") == today else 0
+        bonus = p.get("bonus_searches", 0)
+        ban_tag = " 🚫[BAN]" if p.get("is_banned") else ""
+        res_tag = "✅PDF" if p.get("has_resume") else "➖"
+        lim_disp = "∞" if is_admin(u) else f"{used}/{DAILY_SEARCH_LIMIT} (+{bonus})"
+        lines.append(
+            f"{idx}. <b>{name}</b>{uname} — ID: <code>{u}</code> [{u_lang}] | {res_tag} | Bugun: {lim_disp}{ban_tag}"
+        )
+    bot.send_message(
+        chat_id=chat_id,
+        text="\n".join(lines)[:4000],
+        parse_mode="HTML",
+        reply_markup=build_admin_inline_keyboard(),
+    )
+
 
 def send_direct_message_from_admin(
     bot: telebot.TeleBot,
     target_uid: str,
     msg_text: str,
 ) -> tuple[bool, str]:
-    """
-    Admindan muayyan foydalanuvchiga (`target_uid`) uning tanlagan tiliga mos sarlavha ostida
-    ('📩 Admindan xabar:' / '📩 Сообщение от администратора:' / '📩 Message from Admin:')
-    to'g'ridan-to'g'ri xabar yuboradi.
-    """
     target_uid = str(target_uid).strip()
     prof = load_user_profile(target_uid)
     target_lang = normalize_lang(prof.get("ui_lang") or "uz")
@@ -2339,11 +2541,24 @@ def broadcast_message_to_all_users(bot: telebot.TeleBot, broadcast_text: str) ->
 
 
 # =====================================================================
-# 16. TELEGRAM BOT HANDLERLARI (3-TILLI INTERFEYS + ADMIN PANEL)
+# 16. TELEGRAM BOT HANDLERLARI (3-TILLI INTERFEYS + ADMIN PASTKI MENYUSI)
 # =====================================================================
 
-def _send_welcome_for_user(bot: telebot.TeleBot, uid: str, first_name: str, profile: dict[str, Any]) -> None:
-    """Tanlangan til bo'yicha foydalanuvchiga xush kelibsiz xabari va mos Reply Keyboard yuboradi."""
+def _send_welcome_for_user(
+    bot: telebot.TeleBot,
+    client: genai.Client,
+    uid: str,
+    first_name: str,
+    profile: dict[str, Any],
+) -> None:
+    """
+    Agar foydalanuvchi Admin bo'lsa va rezyumesi hali biriktirilmagan bo'lsa,
+    avtomatik BASE_DIR dagi PDF rezyumelarni biriktiradi va Admin Reply Keyboard chiqaradi.
+    """
+    if is_admin(uid) and (not profile.get("has_resume") or not profile.get("resume_text")):
+        auto_bind_admin_resume_from_base_dir(client)
+        profile = load_user_profile(uid)
+
     lang = normalize_lang(profile.get("ui_lang") or "uz")
     limit_str = tr(lang, "limit_unlimited") if is_admin(uid) else tr(lang, "limit_daily", limit=DAILY_SEARCH_LIMIT)
 
@@ -2369,7 +2584,7 @@ def _send_welcome_for_user(bot: telebot.TeleBot, uid: str, first_name: str, prof
         chat_id=uid,
         text=text,
         parse_mode="HTML",
-        reply_markup=build_main_reply_keyboard(lang),
+        reply_markup=build_main_reply_keyboard(lang, user_id=uid),
     )
 
 
@@ -2398,7 +2613,7 @@ def _process_uploaded_pdf_in_thread(
             message,
             tr(lang, "upload_pdf_only"),
             parse_mode="HTML",
-            reply_markup=build_main_reply_keyboard(lang),
+            reply_markup=build_main_reply_keyboard(lang, user_id=uid),
         )
         return
 
@@ -2483,7 +2698,7 @@ def register_bot_handlers(
     client: genai.Client,
 ) -> None:
 
-    # 1. /admin BUYRUG'I
+    # 1. /admin BUYRUG'I YOKI PASTKI [ 👑 Admin Panel ] TUGMASI
     @bot.message_handler(commands=["admin"])
     def handle_admin_command(message: Message) -> None:
         try:
@@ -2491,33 +2706,81 @@ def register_bot_handlers(
             if not is_admin(sender_id):
                 bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
                 return
-
-            ADMIN_PENDING_ACTION.pop(ADMIN_ID, None)
-            stats = collect_bot_statistics()
-            admin_text = (
-                "👑 <b>Admin Boshqaruv Menyusi</b>\n\n"
-                f"• <b>Admin ID:</b> <code>{ADMIN_ID}</code> (Cheksiz qidiruv)\n"
-                f"• <b>Jami ro‘yxatdan o‘tganlar:</b> <b>{stats['total_users']}</b> ta\n"
-                f"• <b>PDF rezyume yuklaganlar:</b> <b>{stats['with_resume']}</b> ta\n"
-                f"• <b>Bugungi faol qidiruvlar:</b> <b>{stats['today_searches']}</b> ta ({stats['active_users_today']} ta faol user)\n"
-                f"• <b>Bloklanganlar (Ban):</b> <b>{stats['banned_users']}</b> ta\n\n"
-                "💡 <b>Tezkor buyruqlar:</b>\n"
-                "• <code>/send USER_ID Matn</code> — Foydalanuvchiga shaxsiy xabar yuborish\n"
-                "• <code>/broadcast Matn</code> — Barchaga umumiy e'lon yuborish\n"
-                "• <code>/ban USER_ID</code> — Foydalanuvchini bloklash\n"
-                "• <code>/unban USER_ID</code> — Blokdan chiqarish\n"
-                "• <code>/addlimit USER_ID 5</code> — Qo‘shimcha qidiruv limiti berish"
-            )
-            bot.send_message(
-                chat_id=message.chat.id,
-                text=admin_text,
-                parse_mode="HTML",
-                reply_markup=build_admin_inline_keyboard(),
-            )
+            send_admin_panel_overview(bot, message.chat.id)
         except Exception as exc:
             print(f"[!] /admin xatoligi: {exc}", flush=True)
 
-    # 2. ADMIN BUYRUQLARI: /send, /broadcast, /ban, /unban, /addlimit
+    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_ADMIN_PANEL or "Admin Panel" in (m.text or ""))
+    def handle_admin_panel_reply_btn(message: Message) -> None:
+        try:
+            sender_id = message.from_user.id if message.from_user else message.chat.id
+            if not is_admin(sender_id):
+                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
+                return
+            send_admin_panel_overview(bot, message.chat.id)
+        except Exception as exc:
+            print(f"[!] Admin Panel tugmasida xatolik: {exc}", flush=True)
+
+    # 2. ADMIN PASTKI TUGMALARI (📊 Statistika, 👥 Foydalanuvchilar, ✉️ Foydalanuvchiga xabar, 📢 Umumiy e'lon)
+    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_ADMIN_STATS)
+    def handle_admin_stats_reply_btn(message: Message) -> None:
+        try:
+            sender_id = message.from_user.id if message.from_user else message.chat.id
+            if not is_admin(sender_id):
+                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
+                return
+            send_admin_stats_message(bot, message.chat.id)
+        except Exception as exc:
+            print(f"[!] Admin Statistika tugmasida xatolik: {exc}", flush=True)
+
+    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_ADMIN_USERS)
+    def handle_admin_users_reply_btn(message: Message) -> None:
+        try:
+            sender_id = message.from_user.id if message.from_user else message.chat.id
+            if not is_admin(sender_id):
+                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
+                return
+            send_admin_users_list_message(bot, message.chat.id)
+        except Exception as exc:
+            print(f"[!] Admin Foydalanuvchilar tugmasida xatolik: {exc}", flush=True)
+
+    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_ADMIN_SENDMSG)
+    def handle_admin_sendmsg_reply_btn(message: Message) -> None:
+        try:
+            sender_id = message.from_user.id if message.from_user else message.chat.id
+            if not is_admin(sender_id):
+                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
+                return
+            ADMIN_PENDING_ACTION[ADMIN_ID] = "sendmsg"
+            bot.send_message(
+                chat_id=message.chat.id,
+                text=(
+                    "✉️ <b>Xabar yubormoqchi bo‘lgan foydalanuvchi ID raqami va xabar matnini yozib yuboring:</b>\n"
+                    "<i>Masalan:</i> <code>123456789 Assalomu alaykum, profilingiz tasdiqlandi</code>\n"
+                    "<i>(Yoki to‘g‘ridan-to‘g‘ri</i> <code>/send USER_ID Matn</code> <i>buyrug‘ini ishlating)</i>"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            print(f"[!] Admin Foydalanuvchiga xabar tugmasida xatolik: {exc}", flush=True)
+
+    @bot.message_handler(func=lambda m: (m.text or "").strip() == BTN_ADMIN_BROADCAST or "Umumiy e'lon" in (m.text or ""))
+    def handle_admin_broadcast_reply_btn(message: Message) -> None:
+        try:
+            sender_id = message.from_user.id if message.from_user else message.chat.id
+            if not is_admin(sender_id):
+                bot.reply_to(message, "Kechirasiz, sizda bu bo'limga kirish huquqi yo'q")
+                return
+            ADMIN_PENDING_ACTION[ADMIN_ID] = "broadcast"
+            bot.send_message(
+                chat_id=message.chat.id,
+                text="📢 <b>Barcha foydalanuvchilarga yubormoqchi bo‘lgan xabar matnini yozib yuboring:</b>",
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            print(f"[!] Admin Broadcast tugmasida xatolik: {exc}", flush=True)
+
+    # 3. ADMIN BUYRUQLARI: /send, /broadcast, /ban, /unban, /addlimit
     @bot.message_handler(commands=["send", "ban", "unban", "addlimit", "broadcast"])
     def handle_admin_quick_commands(message: Message) -> None:
         try:
@@ -2602,19 +2865,22 @@ def register_bot_handlers(
         except Exception as exc:
             print(f"[!] Admin buyruq xatoligi: {exc}", flush=True)
 
-    # 3. /start VA BIRINCHI KIRISHDA TIL TANLASH
+    # 4. /start VA BIRINCHI KIRISHDA TIL TANLASH (ADMIN UCHUN AVTO-REZYUME BILAN)
     @bot.message_handler(commands=["start", "help"])
     def handle_start(message: Message) -> None:
         try:
             uid = str(message.chat.id)
             profile = update_user_identity(message)
 
+            if is_admin(uid) and (not profile.get("has_resume") or not profile.get("resume_text")):
+                auto_bind_admin_resume_from_base_dir(client)
+                profile = load_user_profile(uid)
+
             if profile.get("is_banned") and not is_admin(uid):
                 lang = normalize_lang(profile.get("ui_lang") or "uz")
                 bot.send_message(uid, tr(lang, "banned_msg"), parse_mode="HTML")
                 return
 
-            # Agar foydalanuvchi profilida til hali tanlanmagan bo'lsa -> 3 tilli Inline tugma chiqadi
             if not profile.get("ui_lang"):
                 bot.send_message(
                     chat_id=uid,
@@ -2625,11 +2891,11 @@ def register_bot_handlers(
                 return
 
             first_name = message.from_user.first_name if message.from_user else "Foydalanuvchi"
-            _send_welcome_for_user(bot, uid, first_name, profile)
+            _send_welcome_for_user(bot, client, uid, first_name, profile)
         except Exception as exc:
             print(f"[!] /start xatoligi: {exc}", flush=True)
 
-    # 4. TILNI O'ZGARTIRISH TUGMASI YOKI /language BUYRUG'I
+    # 5. TILNI O'ZGARTIRISH TUGMASI YOKI /language BUYRUG'I
     @bot.message_handler(
         func=lambda m: (m.text or "").strip() in ALL_CHANGE_LANG_BTNS
         or any(x in (m.text or "") for x in ("Tilni o‘zgartirish", "Tilni o'zgartirish", "Сменить язык", "Change language"))
@@ -2663,7 +2929,7 @@ def register_bot_handlers(
                 message,
                 tr(lang, "upload_pdf_only"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(lang),
+                reply_markup=build_main_reply_keyboard(lang, user_id=uid),
             )
         except Exception:
             pass
@@ -2681,7 +2947,7 @@ def register_bot_handlers(
                 chat_id=uid,
                 text=tr(lang, "upload_pdf_prompt"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(lang),
+                reply_markup=build_main_reply_keyboard(lang, user_id=uid),
             )
         except Exception:
             pass
@@ -2694,6 +2960,10 @@ def register_bot_handlers(
         try:
             uid = str(message.chat.id)
             profile = load_user_profile(uid)
+            if is_admin(uid) and not profile.get("has_resume"):
+                auto_bind_admin_resume_from_base_dir(client)
+                profile = load_user_profile(uid)
+
             lang = normalize_lang(profile.get("ui_lang") or "uz")
 
             if profile.get("is_banned") and not is_admin(uid):
@@ -2704,7 +2974,7 @@ def register_bot_handlers(
                     chat_id=uid,
                     text=tr(lang, "need_resume_first"),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(lang),
+                    reply_markup=build_main_reply_keyboard(lang, user_id=uid),
                 )
                 return
 
@@ -2754,7 +3024,7 @@ def register_bot_handlers(
                 chat_id=uid,
                 text=tr(lang, "history_cleared", count=old_count),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(lang),
+                reply_markup=build_main_reply_keyboard(lang, user_id=uid),
             )
         except Exception as exc:
             print(f"[!] Tarixni tozalashda xatolik: {exc}", flush=True)
@@ -2775,7 +3045,7 @@ def register_bot_handlers(
                 chat_id=uid,
                 text=tr(lang, "scan_stopped"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(lang),
+                reply_markup=build_main_reply_keyboard(lang, user_id=uid),
             )
         except Exception as exc:
             print(f"[!] Qidiruvni to'xtatish tugmasida xatolik: {exc}", flush=True)
@@ -2796,7 +3066,7 @@ def register_bot_handlers(
                 chat_id=uid,
                 text=tr(lang, "schedule_resumed"),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(lang),
+                reply_markup=build_main_reply_keyboard(lang, user_id=uid),
             )
         except Exception as exc:
             print(f"[!] Qayta faollashtirish tugmasida xatolik: {exc}", flush=True)
@@ -2880,6 +3150,10 @@ def register_bot_handlers(
 
             # B) Foydalanuvchi kalit so'z qo'shishi
             profile = load_user_profile(uid)
+            if is_admin(uid) and not profile.get("has_resume"):
+                auto_bind_admin_resume_from_base_dir(client)
+                profile = load_user_profile(uid)
+
             lang = normalize_lang(profile.get("ui_lang") or "uz")
 
             if profile.get("is_banned") and not is_admin(uid):
@@ -2891,7 +3165,7 @@ def register_bot_handlers(
                     chat_id=uid,
                     text=tr(lang, "need_resume_first"),
                     parse_mode="HTML",
-                    reply_markup=build_main_reply_keyboard(lang),
+                    reply_markup=build_main_reply_keyboard(lang, user_id=uid),
                 )
                 return
 
@@ -2917,7 +3191,7 @@ def register_bot_handlers(
                 chat_id=uid,
                 text=tr(lang, "keywords_added", keywords=html.escape(kws_str)),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(lang),
+                reply_markup=build_main_reply_keyboard(lang, user_id=uid),
             )
 
             threading.Thread(
@@ -2959,7 +3233,7 @@ def register_bot_handlers(
                     pass
 
                 first_name = call.from_user.first_name if call.from_user else (profile.get("full_name") or "User")
-                _send_welcome_for_user(bot, uid, first_name, profile)
+                _send_welcome_for_user(bot, client, uid, first_name, profile)
                 return
 
             # 1. ADMIN PANEL TUGMALARI
@@ -2989,48 +3263,13 @@ def register_bot_handlers(
                     return
 
                 if param == "stats":
-                    stats = collect_bot_statistics()
                     bot.answer_callback_query(call.id, "Statistika yangilandi 📊")
-                    stats_text = (
-                        "📊 <b>Bot Statistikasi (Real-vaqt):</b>\n\n"
-                        f"• 👥 <b>Jami ro‘yxatdan o‘tganlar:</b> {stats['total_users']} ta\n"
-                        f"• 📄 <b>PDF rezyume yuklaganlar:</b> {stats['with_resume']} ta\n"
-                        f"• 🔍 <b>Bugungi faol qidiruvlar soni:</b> {stats['today_searches']} ta ({stats['active_users_today']} ta faol user)\n"
-                        f"• 🚫 <b>Bloklangan foydalanuvchilar:</b> {stats['banned_users']} ta\n"
-                        f"• 🕒 <b>Vaqt:</b> <code>{get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
-                    )
-                    bot.send_message(
-                        chat_id=ADMIN_ID,
-                        text=stats_text,
-                        parse_mode="HTML",
-                        reply_markup=build_admin_inline_keyboard(),
-                    )
+                    send_admin_stats_message(bot, ADMIN_ID)
                     return
 
                 if param == "users":
-                    uids = list_all_user_ids()
-                    lines: list[str] = [f"👥 <b>Ro‘yxatdan o‘tgan foydalanuvchilar ({len(uids)} ta):</b>\n"]
-                    today = get_today_str()
-                    for idx, u in enumerate(uids[:30], start=1):
-                        p = load_user_profile(u)
-                        name = html.escape(p.get("full_name") or "User")
-                        uname = f" (@{html.escape(p['username'])})" if p.get("username") else ""
-                        u_lang = (p.get("ui_lang") or "uz").upper()
-                        used = p.get("daily_search_count", 0) if p.get("daily_search_date") == today else 0
-                        bonus = p.get("bonus_searches", 0)
-                        ban_tag = " 🚫[BAN]" if p.get("is_banned") else ""
-                        res_tag = "✅PDF" if p.get("has_resume") else "➖"
-                        lines.append(
-                            f"{idx}. <b>{name}</b>{uname} — ID: <code>{u}</code> [{u_lang}] | {res_tag} | "
-                            f"Bugun: {used}/{DAILY_SEARCH_LIMIT} (+{bonus}){ban_tag}"
-                        )
                     bot.answer_callback_query(call.id)
-                    bot.send_message(
-                        chat_id=ADMIN_ID,
-                        text="\n".join(lines)[:4000],
-                        parse_mode="HTML",
-                        reply_markup=build_admin_inline_keyboard(),
-                    )
+                    send_admin_users_list_message(bot, ADMIN_ID)
                     return
 
                 if param == "sendmsg":
@@ -3110,7 +3349,7 @@ def register_bot_handlers(
                         chat_id=uid,
                         text=tr(lang, "enter_extra_keywords"),
                         parse_mode="HTML",
-                        reply_markup=build_main_reply_keyboard(lang),
+                        reply_markup=build_main_reply_keyboard(lang, user_id=uid),
                     )
                     return
 
@@ -3197,10 +3436,10 @@ def register_bot_handlers(
 
 def main() -> None:
     print("=" * 88, flush=True)
-    print(" 3-TILLI (UZ/RU/EN) MULTI-USER AI ISH QIDIRISH BOTI + ADMIN PANELI", flush=True)
+    print(" 3-TILLI (UZ/RU/EN) MULTI-USER AI ISH QIDIRISH BOTI + ADMIN PASTKI MENYUSI", flush=True)
     print(f" Ishchi papka   : {BASE_DIR}", flush=True)
     print(f" Userlar bazasi : {USERS_DIR}", flush=True)
-    print(f" Admin ID       : {ADMIN_ID}", flush=True)
+    print(f" Admin ID       : {'Sozlangan (ENV)' if ADMIN_ID != 0 else 'Kiritilmagan (0)'}", flush=True)
     print(f" Toshkent vaqti : {get_tashkent_now().strftime('%Y-%m-%d %H:%M:%S (UTC+5)')}", flush=True)
     print("=" * 88, flush=True)
 
@@ -3209,6 +3448,10 @@ def main() -> None:
 
     config = get_config()
     client = genai.Client(api_key=config["GEMINI_API_KEY"])
+
+    # Bot ishga tushganda ADMIN_ID profiliga GitHub papkasidagi (BASE_DIR) PDF rezyumelarni avtomatik ulaymiz
+    if ADMIN_ID != 0:
+        auto_bind_admin_resume_from_base_dir(client)
 
     bot = telebot.TeleBot(config["TELEGRAM_BOT_TOKEN"], threaded=True, num_threads=16)
 
@@ -3225,19 +3468,19 @@ def main() -> None:
             bot.send_message(
                 chat_id=ADMIN_ID,
                 text=(
-                    "👑 <b>3-Tilli (UZ/RU/EN) Multi-User AI Bot + Admin `/send` tizimi ishga tushdi!</b>\n\n"
-                    f"• <b>Admin ID:</b> <code>{ADMIN_ID}</code>\n"
-                    "• <b>Shaxsiy xabar yuborish:</b> <code>/send USER_ID Matn</code> yoki <b>/admin</b> panelidagi "
-                    "<b>[ ✉️ Foydalanuvchiga xabar ]</b> tugmasi orqali.\n"
-                    "• <b>Tilni o‘zgartirish:</b> Pastki menyudagi <b>[ 🌐 Tilni o‘zgartirish ]</b> yoki <code>/language</code>."
+                    "👑 <b>Admin Pastki Menyusi va Avto-Rezyume Tizimi faollashtirildi!</b>\n\n"
+                    f"• <b>Avto-biriktirilgan rezyume:</b> <code>{html.escape(admin_prof.get('resume_filename', 'rezyume.pdf'))}</code>\n"
+                    "• Chatga qayta PDF tashlamasdan to‘g‘ridan-to‘g‘ri <b>[ 🔍 Hozir qidirish ]</b> ni bosishingiz mumkin.\n"
+                    "• Pastki klaviaturangizga maxsus Admin tugmalari (<b>👑 Admin Panel</b>, <b>📊 Statistika</b>, "
+                    "<b>👥 Foydalanuvchilar</b>, <b>✉️ Foydalanuvchiga xabar</b>, <b>📢 Umumiy e'lon</b>) qo‘shildi."
                 ),
                 parse_mode="HTML",
-                reply_markup=build_main_reply_keyboard(admin_lang),
+                reply_markup=build_main_reply_keyboard(admin_lang, user_id=ADMIN_ID),
             )
         except Exception as exc:
             print(f"  [!] Admin xabarini yuborishda xatolik: {exc}", flush=True)
 
-    print("\n[4/4] 3-Tilli Multi-User Telegram Bot + Admin Panel faol!", flush=True)
+    print("\n[4/4] 3-Tilli Multi-User Telegram Bot + Admin Reply Keyboard faol!", flush=True)
 
     while True:
         try:
